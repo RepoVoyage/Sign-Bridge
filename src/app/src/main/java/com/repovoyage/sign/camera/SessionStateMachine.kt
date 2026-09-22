@@ -6,6 +6,9 @@ package com.repovoyage.sign.camera
  * 与旧代次数据抑制在 CameraSession 集成层处理，不在此处。
  *
  * 规则：用户停止/权限拒绝/过热不进入断线重试；用户停止优先于任何延迟重试。
+ * 被动断连的触发面覆盖"已进入授权"的连接态（Streaming/Reconnecting/Authorizing/
+ * Preparing）：断连监听在整个 WIFI connect 期间就已注册，SDK 内部同步阶段的
+ * 断连不能被无声丢弃（否则会话永远卡在连接中）。
  */
 class SessionStateMachine(
     private val reconnectPolicy: ReconnectPolicy = ReconnectPolicy(),
@@ -14,19 +17,26 @@ class SessionStateMachine(
     var state: SessionState = SessionState.Idle
         private set
 
+    /** 重试次数与退避序列一一对应：每消费一个退避延迟计一次，成功出图清零 */
+    private var reconnectAttempts = 0
+
     /** 开始会话：Idle → Checking */
     fun start(): Boolean = transitionTo(SessionState.Checking)
 
-    /** 非主动断连（仅 Streaming/Reconnecting）：退避重连，重试耗尽 → Error(RETRY_EXHAUSTED) */
+    /** 非主动断连：退避重连，重试耗尽 → Error(RETRY_EXHAUSTED) */
     fun onDisconnected(): Boolean {
         val from = state
-        if (from !is SessionState.Streaming && from !is SessionState.Reconnecting) return false
+        val reconnectable = from is SessionState.Streaming ||
+            from is SessionState.Reconnecting ||
+            from is SessionState.Authorizing ||
+            from is SessionState.Preparing
+        if (!reconnectable) return false
         val delayMs = reconnectPolicy.onDisconnected() ?: run {
             state = SessionState.Error(SessionError.RETRY_EXHAUSTED)
             return true
         }
-        val attempt = (from as? SessionState.Reconnecting)?.attempt?.plus(1) ?: 1
-        state = SessionState.Reconnecting(attempt, delayMs)
+        reconnectAttempts += 1
+        state = SessionState.Reconnecting(reconnectAttempts, delayMs)
         return true
     }
 
@@ -49,7 +59,10 @@ class SessionStateMachine(
     /** 通用合法转移：合法则更新状态并返回 true；非法保持原状态返回 false */
     fun transitionTo(candidate: SessionState): Boolean {
         if (!isLegal(state, candidate)) return false
-        if (candidate is SessionState.Streaming) reconnectPolicy.onStreamRecovered()
+        if (candidate is SessionState.Streaming) {
+            reconnectPolicy.onStreamRecovered()
+            reconnectAttempts = 0
+        }
         state = candidate
         return true
     }

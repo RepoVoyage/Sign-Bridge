@@ -131,8 +131,9 @@ class SessionStateMachineTest {
     }
 
     @Test
-    fun `非流式状态忽略断连事件`() {
-        // 逐级走连接梯子，每个非流式状态断言断连事件不推进
+    fun `连接尝试阶段忽略断连事件`() {
+        // 逐级走连接梯子，未进入授权前的状态断言断连事件不推进
+        // （此阶段失败走 connect() 回调的 Error 路径，不走退避）
         assertFalse(machine.onDisconnected())                                   // Idle
         machine.start()
         assertFalse(machine.onDisconnected())                                   // Checking
@@ -141,12 +142,28 @@ class SessionStateMachineTest {
         machine.transitionTo(SessionState.WifiConnecting)
         assertFalse(machine.onDisconnected())
         machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING))
-        assertFalse(machine.onDisconnected())
         machine.transitionTo(SessionState.Activating)
-        assertFalse(machine.onDisconnected())                                   // Activating
+        assertFalse(machine.onDisconnected())                                   // Activating 需公网，不走退避
         machine.transitionTo(SessionState.Preparing)
-        assertFalse(machine.onDisconnected())                                   // Preparing
         assertEquals(SessionState.Preparing, machine.state)
+    }
+
+    @Test
+    fun `授权与准备阶段的被动断连进入重连`() {
+        // 断连监听在 WIFI connect 全程已注册（含 SDK 内部同步阶段），
+        // 已进入授权的连接态断连须走退避，否则会话无声卡死
+        assertTrue(machine.start())
+        machine.transitionTo(SessionState.BleConnecting("GO 3S"))
+        machine.transitionTo(SessionState.WifiConnecting)
+        machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING))
+        assertTrue(machine.onDisconnected())
+        assertEquals(SessionState.Reconnecting(1, 1_000L), machine.state)
+        // 重试恢复到 Preparing（尚未出图）再次断连：退避递增且 attempt 与延迟一一对应
+        machine.transitionTo(SessionState.WifiConnecting)
+        machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING))
+        machine.transitionTo(SessionState.Preparing)
+        assertTrue(machine.onDisconnected())
+        assertEquals(SessionState.Reconnecting(2, 2_000L), machine.state)
     }
 
     @Test

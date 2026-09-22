@@ -2,4 +2,7 @@
 <resources>
     <string name="app_name">手语翻译</string>
     <string name="scaffold_placeholder">工程骨架就绪（P1）\n相机连接模块开发中</string>
+    <string name="camera_service_channel_name">相机连接</string>
+    <string name="camera_service_notification_title">手语翻译运行中</string>
+    <string name="camera_service_notification_text">正在保持与相机的连接</string>
 </resources>
