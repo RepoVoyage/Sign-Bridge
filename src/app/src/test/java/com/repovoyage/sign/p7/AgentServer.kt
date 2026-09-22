@@ -5,9 +5,10 @@ import java.io.InputStreamReader
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.concurrent.thread
 
-/** 测试用假云端服务（agent/docs/API.md HTTP 契约）：逐条回放脚本响应并捕获请求 */
+/** 测试用假云端服务：按序回放脚本响应（跨连接共享队列）并捕获请求 */
 class AgentServer : AutoCloseable {
 
     class CapturedRequest(val path: String, val headers: Map<String, String>, val body: String)
@@ -18,11 +19,13 @@ class AgentServer : AutoCloseable {
 
     private val server = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
     val port: Int = server.localPort
+    private val pending = ConcurrentLinkedQueue<ScriptedResponse>()
     private var thread: Thread? = null
 
     @Volatile private var closed = false
 
     fun start(script: List<ScriptedResponse>) {
+        pending.addAll(script)
         thread = thread(name = "agent-server", isDaemon = true) {
             while (!closed) {
                 val client = try {
@@ -30,12 +33,12 @@ class AgentServer : AutoCloseable {
                 } catch (_: Exception) {
                     break
                 }
-                serve(client, script.iterator())
+                serve(client)
             }
         }
     }
 
-    private fun serve(client: Socket, responses: Iterator<ScriptedResponse>) {
+    private fun serve(client: Socket) {
         client.use { c ->
             c.soTimeout = 5_000
             val reader = BufferedReader(InputStreamReader(c.getInputStream(), Charsets.UTF_8))
@@ -51,7 +54,7 @@ class AgentServer : AutoCloseable {
             val body = CharArray(length).let { reader.read(it); String(it) }
             val path = requestLine.split(" ").getOrNull(1) ?: ""
             synchronized(requests) { requests += CapturedRequest(path, headers, body) }
-            val response = if (responses.hasNext()) responses.next() else ScriptedResponse(500, "{}")
+            val response = pending.poll() ?: ScriptedResponse(500, "{}")
             val bytes = response.jsonBody.toByteArray(Charsets.UTF_8)
             c.getOutputStream().apply {
                 write(
