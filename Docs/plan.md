@@ -197,8 +197,9 @@ COMPLETE 但有缺口按协议违规上报。单测 145 条 0 红、38 条分阶
 
 ### P6 识别与句子管理（依赖 ModelSpec 草案）
 
-- `SignRecognizer` 适配器、`SentenceManager` 状态机（API.md §4/§5）
-- 验收：重叠窗口、边界信号、中断/过期回调全路径测试
+- ~~`SentenceManager` 状态机（API.md §5）~~ ✅ 纯同步领域对象 + 10 条契约测试全绿（2026-09-23，`7f74720`）：重叠窗口同段增 revision、epoch 前进中断旧段、迟到提交/收尾丢弃、RELIABLE→FINALIZING / UNCERTAIN→待核对不阻塞、finalize 冻结、discard
+- `SignRecognizer` 适配器（API.md §4）**推迟**：依赖 `ModelSpec` 子类型与数值（§3，训练后锁定），P5 未启动前拟草案无消费者——待 P5 ModelSpec 草案就绪后实现（2026-09-23 用户决定跳过）
+- 验收：重叠窗口、边界信号、中断/过期回调全路径测试（✅ SentenceManager 侧；识别器侧随适配器补）
 
 ### P7 语言处理 / TTS / 缓存 / UI
 
