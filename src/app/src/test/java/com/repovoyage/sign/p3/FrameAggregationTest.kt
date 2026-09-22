@@ -15,7 +15,6 @@ import org.junit.Test
  * P3 分片聚合验收（ARCHITECTURE.md §2.2.1 / API.md §2）。
  * 开工时移除 @Ignore：先红（TODO）→ 实现 → 绿。
  */
-@Ignore("P3：待 FrameAssembler 实现（契约见 ARCHITECTURE §2.2.1）")
 class FrameAggregationTest {
 
     private val assembler = FrameAssembler()
