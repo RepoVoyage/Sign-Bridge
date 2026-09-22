@@ -5,4 +5,18 @@
     <string name="camera_service_channel_name">相机连接</string>
     <string name="camera_service_notification_title">手语翻译运行中</string>
     <string name="camera_service_notification_text">正在保持与相机的连接</string>
+    <string name="state_idle_hint">状态：未启动</string>
+    <string name="state_format">状态：%1$s</string>
+    <string name="event_format">事件：%1$s</string>
+    <string name="scan_hint">点击「扫描相机」开始</string>
+    <string name="scan_button">扫描相机（10 秒）</string>
+    <string name="stop_button">停止会话</string>
+    <string name="scanning">扫描中…</string>
+    <string name="found_n_devices">发现 %1$d 台设备</string>
+    <string name="scan_finished">扫描完成：%1$d 台设备</string>
+    <string name="scan_failed">扫描失败：%1$s</string>
+    <string name="connecting_device">连接 %1$s…</string>
+    <string name="service_not_ready">前台服务未就绪</string>
+    <string name="unnamed_device">未命名设备 %1$d</string>
+    <string name="permission_denied_hint">需要蓝牙权限才能扫描相机，请到系统设置授权</string>
 </resources>
