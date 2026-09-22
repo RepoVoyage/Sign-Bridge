@@ -221,20 +221,24 @@ class MainActivity : AppCompatActivity() {
         sessionJobs += scope.launch {
             s.events.collect { event -> statusText.text = getString(R.string.event_format, event) }
         }
-        // 取流统计 1s 采样（P3 验证期专用，走 SdkCameraSession 具体类型）
+        // 取流/解码统计 1s 采样（P3 验证期专用，走 SdkCameraSession 具体类型）
         sessionJobs += scope.launch {
             var lastFrames = -1L
+            var lastDecoded = -1L
             var lastAt = 0L
+            var lastDecodeAt = 0L
             while (isActive) {
                 delay(1_000)
-                val st = (session as? SdkCameraSession)?.streamStats?.value
+                val session = session as? SdkCameraSession
+                val st = session?.streamStats?.value
                 if (st == null) {
                     lastFrames = -1
                     continue
                 }
+                var text = ""
                 if (lastFrames >= 0 && lastAt > 0) {
                     val fps = (st.framesCommitted - lastFrames) * 1000f / (SystemClock.elapsedRealtime() - lastAt)
-                    statsText.text = getString(
+                    text = getString(
                         R.string.stream_stats_format,
                         st.generation,
                         st.framesCommitted,
@@ -245,6 +249,25 @@ class MainActivity : AppCompatActivity() {
                 }
                 lastFrames = st.framesCommitted
                 lastAt = SystemClock.elapsedRealtime()
+                val ds = session?.decodeStats?.value
+                if (ds != null) {
+                    if (lastDecoded >= 0 && lastDecodeAt > 0 && ds.framesDecoded >= lastDecoded) {
+                        val dfps = (ds.framesDecoded - lastDecoded) * 1000f / (SystemClock.elapsedRealtime() - lastDecodeAt)
+                        text += "\n" + getString(
+                            R.string.decode_stats_format,
+                            ds.generation,
+                            ds.framesDecoded,
+                            dfps,
+                            ds.width,
+                            ds.height,
+                        )
+                    }
+                    lastDecoded = ds.framesDecoded
+                    lastDecodeAt = SystemClock.elapsedRealtime()
+                } else {
+                    lastDecoded = -1
+                }
+                if (text.isNotEmpty()) statsText.text = text
             }
         }
     }

@@ -22,13 +22,19 @@ import com.arashivision.sdk.camera.core.model.option.BatteryData
 import com.arashivision.sdk.camera.core.model.option.VideoEncode
 import com.arashivision.sdk.camera.core.model.option.WiFiData
 import com.repovoyage.sign.video.ChunkIngestQueue
+import com.repovoyage.sign.video.DecodeFrameQueue
+import com.repovoyage.sign.video.DecodeStats
+import com.repovoyage.sign.video.DecodeSyncGate
+import com.repovoyage.sign.video.DecodedFrame
 import com.repovoyage.sign.video.FrameAssembler
 import com.repovoyage.sign.video.H264DecodePrep
 import com.repovoyage.sign.video.StreamChunk
 import com.repovoyage.sign.video.StreamStats
+import com.repovoyage.sign.video.SurfacelessH264Decoder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,6 +80,10 @@ class SdkCameraSession(
     private val _streamStats = MutableStateFlow<StreamStats?>(null)
     val streamStats: StateFlow<StreamStats?> = _streamStats.asStateFlow()
 
+    /** P3 验证期解码统计（单写者：解码消费协程） */
+    private val _decodeStats = MutableStateFlow<DecodeStats?>(null)
+    val decodeStats: StateFlow<DecodeStats?> = _decodeStats.asStateFlow()
+
     private val appContext = context.applicationContext
     private val connectivityManager =
         appContext.getSystemService(ConnectivityManager::class.java)
@@ -87,8 +97,9 @@ class SdkCameraSession(
     private var systemWifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     /**
-     * 进行中的取流（一次 startStream 一个实例）：入口队列 + 聚合器 + 消费协程。
-     * 每次开流 generation 递增；旧实例的数据回调与分片因代次/实例不匹配被丢弃。
+     * 进行中的取流（一次 startStream 一个实例）：入口队列 + 聚合器 + 解码准备链 +
+     * 消费/解码两条协程。每次开流 generation 递增；旧实例的数据回调与分片因代次/
+     * 实例不匹配被丢弃。
      */
     private class ActiveStream(
         val camera: CameraDevice,
@@ -96,8 +107,15 @@ class SdkCameraSession(
         val queue: ChunkIngestQueue,
         val assembler: FrameAssembler,
         val prep: H264DecodePrep,
+        val frameQueue: DecodeFrameQueue,
+        val gate: DecodeSyncGate,
         val job: Job,
-    )
+        val decodeJob: Job,
+    ) {
+        /** 声明尺寸（getPreviewParams 实测回填），供解码器 configure 提示值 */
+        @Volatile var declaredWidth: Int = 0
+        @Volatile var declaredHeight: Int = 0
+    }
 
     @Volatile
     private var activeStream: ActiveStream? = null
@@ -201,8 +219,13 @@ class SdkCameraSession(
         )
         val assembler = FrameAssembler()
         val prep = H264DecodePrep()
-        val job = scope.launch(Dispatchers.IO) { consumeChunks(camera, queue, assembler, prep) }
-        activeStream = ActiveStream(camera, generation, queue, assembler, prep, job)
+        val frameQueue = DecodeFrameQueue(
+            onOverload = { emitEvent(SessionEvent.StreamOverload(OverloadLocation.DECODER)) },
+        )
+        val gate = DecodeSyncGate()
+        val job = scope.launch(Dispatchers.IO) { consumeChunks(camera, queue, assembler, prep, frameQueue) }
+        val decodeJob = scope.launch(Dispatchers.IO) { decodeLoop(camera, frameQueue, gate, prep) }
+        activeStream = ActiveStream(camera, generation, queue, assembler, prep, frameQueue, gate, job, decodeJob)
         runCatching {
             camera.preview.init(appContext as android.app.Application)
             camera.preview.registerCameraStreamListener(streamListener)
@@ -214,12 +237,13 @@ class SdkCameraSession(
         }
     }
 
-    /** 分片消费协程：聚合提交帧 → 解码准备链（SPS/PPS/IDR 验证）+ 过载恢复 */
+    /** 分片消费协程：聚合提交帧 → 解码准备链（SPS/PPS/IDR 验证）→ 待解码队列 + 过载恢复 */
     private suspend fun CoroutineScope.consumeChunks(
         camera: CameraDevice,
         queue: ChunkIngestQueue,
         assembler: FrameAssembler,
         prep: H264DecodePrep,
+        frameQueue: DecodeFrameQueue,
     ) {
         while (isActive) {
             val chunk = queue.receive()
@@ -241,8 +265,83 @@ class SdkCameraSession(
                     lastPtsUs = frames.last().ptsUs,
                     syncFrames = (st?.syncFrames ?: 0) + frames.count { it.isSyncPoint },
                 )
+                frames.forEach { frameQueue.offer(it) }
             }
         }
+    }
+
+    /**
+     * 解码消费协程：门控（从本代次首个随机访问帧起投喂）→ MediaCodec 无 Surface 解码。
+     * 待解码队列过载或解码器异常 → 清空解码链重新同步（冲刷/重建 + 重新门控 +
+     * 请求关键帧——GOP 实测超长，不能干等下一个 IDR）。
+     */
+    private suspend fun CoroutineScope.decodeLoop(
+        camera: CameraDevice,
+        frameQueue: DecodeFrameQueue,
+        gate: DecodeSyncGate,
+        prep: H264DecodePrep,
+    ) {
+        var decoder: SurfacelessH264Decoder? = null
+        val resync: () -> Unit = {
+            frameQueue.clear()
+            decoder?.flush()
+            gate.reset()
+            scope.launch { runCatching { camera.preview.requestStreamIframe() } }
+        }
+        val rebuild: () -> Unit = {
+            frameQueue.clear()
+            decoder?.stop()
+            decoder = null
+            gate.reset()
+            scope.launch { runCatching { camera.preview.requestStreamIframe() } }
+        }
+        try {
+            while (isActive) {
+                val frame = frameQueue.receive()
+                if (frameQueue.isOverloaded) {
+                    resync()
+                    continue
+                }
+                if (!gate.shouldFeed(frame)) continue
+                if (decoder == null) {
+                    val csd = prep.csd()
+                    val w = activeStream?.declaredWidth ?: 0
+                    if (csd == null || w == 0) {
+                        // 参数集或声明尺寸未就绪：请求关键帧重发（含 CSD），不投喂中间帧
+                        scope.launch { runCatching { camera.preview.requestStreamIframe() } }
+                        continue
+                    }
+                    decoder = SurfacelessH264Decoder(onFrame = ::onDecodedFrame)
+                        .also { it.start(w, activeStream!!.declaredHeight, csd) }
+                }
+                try {
+                    if (!decoder!!.feed(frame)) {
+                        // input buffer 持续拿不到 = 解码端积压：重建解码链
+                        rebuild()
+                    } else {
+                        decoder!!.drain()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "decoder failure: ${e.message}")
+                    rebuild()
+                }
+            }
+        } catch (e: ClosedReceiveChannelException) {
+            // 流停止：正常退出
+        } finally {
+            decoder?.stop()
+        }
+    }
+
+    /** 解码输出（P3 验证期仅记统计；像素消费方 P4/P6 接入） */
+    private fun onDecodedFrame(frame: DecodedFrame) {
+        val st = _decodeStats.value
+        _decodeStats.value = DecodeStats(
+            generation = frame.streamGeneration,
+            framesDecoded = (st?.takeIf { it.generation == frame.streamGeneration }?.framesDecoded ?: 0) + 1,
+            width = frame.width,
+            height = frame.height,
+        )
     }
 
     /**
@@ -280,6 +379,8 @@ class SdkCameraSession(
             return
         }
         val stream = activeStream ?: return
+        stream.declaredWidth = width
+        stream.declaredHeight = height
         Log.i(TAG, "stream params ready: ${width}x${height}@${fps} $encode gen=${stream.generation}")
         goto(
             SessionState.Streaming(StreamParams(width, height, fps, encode, stream.generation)),
@@ -297,12 +398,14 @@ class SdkCameraSession(
         return null
     }
 
-    /** 停流清理：取消消费协程 → 关闭队列 → 注销监听 → stopStream（须在 release 前） */
+    /** 停流清理：取消消费/解码协程 → 关闭队列 → 注销监听 → stopStream（须在 release 前） */
     private fun stopStreaming() {
         val stream = activeStream ?: return
         activeStream = null
         stream.job.cancel()
+        stream.decodeJob.cancel()
         stream.queue.close()
+        stream.frameQueue.close()
         runCatching { stream.camera.preview.unregisterCameraStreamListener(streamListener) }
         runCatching { stream.camera.preview.stopStream() }
     }

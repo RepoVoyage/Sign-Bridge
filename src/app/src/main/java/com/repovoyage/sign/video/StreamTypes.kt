@@ -27,3 +27,11 @@ data class StreamStats(
     val lastPtsUs: Long,
     val syncFrames: Long,                // isSyncPoint=true 的帧数（验证 IDR 间隔用）
 )
+
+/** P3 真机验证用解码统计；单写者（解码消费协程），验证收敛后移除 */
+data class DecodeStats(
+    val generation: Long,
+    val framesDecoded: Long,
+    val width: Int,                      // 实际解码尺寸（SPS 实际值，可与声明值不同）
+    val height: Int,
+)
