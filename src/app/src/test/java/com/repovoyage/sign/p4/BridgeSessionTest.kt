@@ -114,10 +114,20 @@ class BridgeSessionTest {
     @Test
     fun `空闲 2 秒主动发心跳`() {
         handshaken()
-        val out = session.onTick(now = 2_000)
+        val out = session.onTick(now = 2_001)     // 距最后流量（CONFIG_ACK, now=1）满 2s
         assertFalse(out.close)
         assertEquals("HEARTBEAT", out.sends.single().getString("type"))
         assertTrue(out.sends.single().has("t"))
+    }
+
+    @Test
+    fun `客户端消息刷新心跳计时避免立即补发`() {
+        handshaken()
+        // 慢握手等价场景：距会话起点远超 2s，但客户端消息刚到 → 通道活跃，不补发
+        session.onMessage(json("HEARTBEAT", "t" to 10_000), now = 10_000)
+        val out = session.onTick(now = 10_001)
+        assertFalse(out.close)
+        assertTrue(out.sends.isEmpty())
     }
 
     @Test

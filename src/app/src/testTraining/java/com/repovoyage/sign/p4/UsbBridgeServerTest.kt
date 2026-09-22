@@ -193,7 +193,7 @@ class UsbBridgeServerTest {
         val heart = JSONObject().put("type", "HEARTBEAT").put("t", 1)
         c2.getOutputStream().apply { write(FrameCodec.encode(heart)); flush() }
         // 心跳不回复（回复型心跳要等 2s 空闲；800ms 静默窗口内不应有任何消息）
-        c2.soTimeout = 800
+        c2.soTimeout = 400   // 静默窗口须显著小于手机 2s 心跳间隔，慢机下 800ms 会被心跳追上（偶发红）
         assertNull(try { codec2.readMessage() } catch (_: SocketTimeoutException) { null })
         c2.close()
         s.stop()

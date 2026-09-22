@@ -37,6 +37,9 @@ class BridgeSession(
     fun onMessage(header: JSONObject, now: Long): Outcome {
         if (closed) return Outcome(emptyList(), true)
         lastReceivedAt = now
+        // 收到任何消息即视为通道活跃：心跳发送计时随之刷新（有流量无需补发，
+        // 慢握手后客户端首条消息不应触发立即心跳）
+        lastSentAt = now
         return when (phase) {
             Phase.AWAIT_AUTH -> onAuthReq(header)
             Phase.AWAIT_CONFIG_ACK -> when (header.optString("type")) {
