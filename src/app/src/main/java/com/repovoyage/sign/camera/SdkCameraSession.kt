@@ -141,6 +141,9 @@ class SdkCameraSession(
     /** 同一次物理断连可能同时触发 listener 与健康监测，2s 内去重防止重试名额被双计 */
     private var lastDisconnectHandledAtMs = 0L
 
+    /** 当前连接尝试的起点（分段耗时诊断，launchAttempt 重置） */
+    private var attemptStageStartedAtMs = 0L
+
     private var lastBleDevice: BleDeviceCore? = null
     private var lastWifi: WiFiData? = null
 
@@ -503,8 +506,7 @@ class SdkCameraSession(
             return
         }
         lastWifi = wifi
-        // 系统对不可用网络可能拖 30s+ 才报 onUnavailable，自设上限保证退避节奏可控
-        val network = withTimeoutOrNull(SYSTEM_WIFI_TIMEOUT_MS) { connectSystemWifi(wifi.ssid, wifi.pwd) }
+        val network = connectSystemWifiWithRetry(wifi.ssid, wifi.pwd)
         if (network == null) {
             failAttempt("system wifi unavailable")
             return
@@ -603,7 +605,7 @@ class SdkCameraSession(
             return
         }
         goto(SessionState.WifiConnecting)
-        val network = withTimeoutOrNull(SYSTEM_WIFI_TIMEOUT_MS) { connectSystemWifi(wifi.ssid, wifi.pwd) }
+        val network = connectSystemWifiWithRetry(wifi.ssid, wifi.pwd)
         if (network == null) {
             onReconnectAttemptFailed("system wifi unavailable")
             return
@@ -649,6 +651,7 @@ class SdkCameraSession(
             Log.i(TAG, "initial connect auto-retry $initialAttemptFailures/$MAX_INITIAL_RETRIES")
             connectionAttemptJob = scope.launch {
                 delay(INITIAL_RETRY_DELAY_MS)
+                attemptStageStartedAtMs = SystemClock.elapsedRealtime()
                 // 等待期间用户可能已停止（Stopping/Idle/Error）则放弃重试
                 val s = machine.state
                 val inConnectLadder = s is SessionState.Checking ||
@@ -697,6 +700,25 @@ class SdkCameraSession(
      * 经 WifiNetworkSpecifier 发起进程专属系统热点连接（照 Demo 抄录）。
      * 回调必须持续注册以维持 Network 存活，直到断连/清理才 unregister。
      */
+    /**
+     * 系统热点连接（同一尝试内局部重试）：上一会话残留的关联拆除、或冷扫描
+     * 都可能让单次 requestNetwork 拖满 10s 仍 unavailable。局部重试避免整链路
+     * 重跑（BLE 释放→重连会撞 GATT 快速重连瞬断窗口，实测 24s 才连上）。
+     * BLE 与 AP 模式此时已就绪，重试只花时间不换通道。
+     */
+    private suspend fun connectSystemWifiWithRetry(ssid: String, password: String): Network? {
+        repeat(WIFI_CONNECT_TRIES) { i ->
+            if (i > 0) {
+                delay(WIFI_CONNECT_RETRY_GAP_MS)
+                Log.w(TAG, "system wifi retry ${i + 1}/$WIFI_CONNECT_TRIES")
+            }
+            // 系统对不可用网络可能拖 30s+ 才报 onUnavailable，自设上限保证退避节奏可控
+            val network = withTimeoutOrNull(SYSTEM_WIFI_TIMEOUT_MS) { connectSystemWifi(ssid, password) }
+            if (network != null) return network
+        }
+        return null
+    }
+
     private suspend fun connectSystemWifi(ssid: String, password: String): Network? {
         if (!wifiManager.isWifiEnabled) return null
         unregisterSystemWifiNetworkCallback()
@@ -813,6 +835,7 @@ class SdkCameraSession(
     /** 新连接尝试：取消旧链路，root Job 挂在 scope 上，后续步骤以它为父 */
     private fun launchAttempt(block: suspend CoroutineScope.() -> Unit) {
         connectionAttemptJob?.cancel()
+        attemptStageStartedAtMs = SystemClock.elapsedRealtime()
         connectionAttemptJob = scope.launch { coroutineScope(block) }
         armAttemptWatchdog { failAttempt("attempt timeout") }
     }
@@ -852,6 +875,12 @@ class SdkCameraSession(
 
     private fun goto(candidate: SessionState): Boolean {
         val ok = machine.transitionTo(candidate)
+        // 连接链路分段耗时诊断（P2 灵敏度实测用）：attempt 起点重置
+        if (ok) {
+            val now = SystemClock.elapsedRealtime()
+            if (attemptStageStartedAtMs == 0L) attemptStageStartedAtMs = now
+            Log.i(TAG, "stage $candidate +${now - attemptStageStartedAtMs}ms")
+        }
         publish()
         return ok
     }
@@ -869,6 +898,8 @@ class SdkCameraSession(
         const val MAX_INITIAL_RETRIES = 2
         const val INITIAL_RETRY_DELAY_MS = 2_000L
         const val SYSTEM_WIFI_TIMEOUT_MS = 10_000L
+        const val WIFI_CONNECT_TRIES = 3
+        const val WIFI_CONNECT_RETRY_GAP_MS = 1_000L
         const val ATTEMPT_TIMEOUT_MS = 60_000L
         const val ENCODE_QUERY_RETRIES = 3
         const val ENCODE_QUERY_RETRY_INTERVAL_MS = 1_000L
