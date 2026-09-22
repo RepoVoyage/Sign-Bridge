@@ -58,9 +58,10 @@
 
 | 任务 | 完成标准 |
 |---|---|
-| Gradle 工程：锁定 AGP 8.7.3 / Gradle 8.11.1 / JDK 17 / Kotlin 2.3.20 / minSdk 29 / compileSdk 35 / arm64-v8a | 两 flavor（training/production）均能构建出 APK 并安装 |
-| Maven 凭据本地注入（不进仓库） | 仓库内无任何凭据，构建机可复现 |
-| 空壳：Application、前台服务声明、权限清单按 Demo 裁剪 | productionRelease 的合并 Manifest 检查通过 |
+| ~~Gradle 工程：锁定 AGP 8.7.3 / Gradle 8.11.1 / JDK 17 / Kotlin 2.3.20 / minSdk 29 / compileSdk 35 / arm64-v8a~~ | ✅ 两 flavor debug + productionRelease 均构建通过（2026-09-22） |
+| ~~Maven 凭据本地注入（不进仓库）~~ | ✅ 凭据走 `~/.gradle/gradle.properties`，仓库零凭据 |
+| ~~空壳：Application、前台服务声明、权限清单按 Demo 裁剪~~ | ✅ Manifest 合并通过（allowBackup 冲突已用 tools:replace 解决）；单元测试 p1 全绿 |
+| 装机验证 | ⏳ 用户决定推迟：P2 首次装机时顺带补验（2026-09-22） |
 
 ### P2 相机连接模块（约 1–2 周）
 
