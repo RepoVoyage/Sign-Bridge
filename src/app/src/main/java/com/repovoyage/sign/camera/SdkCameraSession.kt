@@ -77,6 +77,13 @@ class SdkCameraSession(
     private var lastBleDevice: BleDeviceCore? = null
     private var lastWifi: WiFiData? = null
 
+    /**
+     * 初连失败的瞬时性重试计数（真机验证：相机深度休眠时唤醒握手失败、
+     * 停止后快速重连 GATT 133 均为瞬时错误，直接报 Error 无法满足连续
+     * 连接成功率）。重试走完整 BLE 链路，成功后清零。
+     */
+    private var initialAttemptFailures = 0
+
     // ---------------------------------------------------------------- 回调
 
     private val disconnectListener = object : DisconnectListener {
@@ -113,6 +120,7 @@ class SdkCameraSession(
         publish()
         lastBleDevice = bleDevice
         lastWifi = null
+        initialAttemptFailures = 0
         launchAttempt { connectViaBle(bleDevice) }
     }
 
@@ -199,6 +207,7 @@ class SdkCameraSession(
 
     private suspend fun onConnected(camera: CameraDevice) {
         goto(SessionState.Preparing)
+        initialAttemptFailures = 0
         registerSystemListeners(camera)
         startHealthWatch(camera)
         // P3 接入：loadJson/能力查询/开流 → Streaming(params)，streamGeneration 递增
@@ -292,11 +301,30 @@ class SdkCameraSession(
         scheduleReconnect()
     }
 
-    /** 初连失败：直接 Error（不进退避，用户可见后手动重试） */
+    /** 初连失败：瞬时性错误先自动重试（完整链路），耗尽才 Error */
     private fun failAttempt(message: String?) {
         Log.w(TAG, "connect attempt failed: $message")
         connectionAttemptJob = null
         stopHealthWatch()
+        if (initialAttemptFailures < MAX_INITIAL_RETRIES) {
+            initialAttemptFailures += 1
+            Log.i(TAG, "initial connect auto-retry $initialAttemptFailures/$MAX_INITIAL_RETRIES")
+            connectionAttemptJob = scope.launch {
+                delay(INITIAL_RETRY_DELAY_MS)
+                // 等待期间用户可能已停止（Stopping/Idle/Error）则放弃重试
+                val s = machine.state
+                val inConnectLadder = s is SessionState.Checking ||
+                    s is SessionState.BleConnecting ||
+                    s is SessionState.WifiConnecting ||
+                    s is SessionState.Authorizing ||
+                    s is SessionState.Activating ||
+                    s is SessionState.Preparing
+                val ble = lastBleDevice
+                if (!inConnectLadder || ble == null) return@launch
+                connectViaBle(ble)
+            }
+            return
+        }
         machine.transitionTo(SessionState.Error(SessionError.UNRECOVERABLE))
         publish()
         releaseDeviceAndUnbind()
@@ -474,5 +502,7 @@ class SdkCameraSession(
         const val AP_MODE_POLL_TIMES = 10
         const val AP_MODE_POLL_INTERVAL_MS = 500L
         const val DISCONNECT_DEDUPE_MS = 2_000L
+        const val MAX_INITIAL_RETRIES = 2
+        const val INITIAL_RETRY_DELAY_MS = 2_000L
     }
 }
