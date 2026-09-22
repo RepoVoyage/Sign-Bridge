@@ -1,9 +1,11 @@
-"""csl_capture 客户端 × §9 线协议联调测试（模拟手机侧）。
+"""csl_capture 客户端 × §9 线协议 + §2.8.3 授权流程测试（模拟手机侧）。
 
 覆盖：握手收帧 COMPLETE 落盘、BAD_TOKEN、GAP→INCOMPLETE、
 COMPLETE 但序号断续（客户端揭穿）、帧长度声明不符（断开）、
-空闲心跳、--duration 主动停止。
+空闲心跳、--duration 主动停止；授权四要素缺一不持久化、
+保留期限解析、authorization.json 元数据记录。
 """
+import datetime
 import json
 import subprocess
 import sys
@@ -16,9 +18,22 @@ TOKEN = "test1234"
 W, H = 4, 4
 PTS_STEP = 33_333  # 模拟 30fps
 
+# §2.8.3 授权四要素 + 删除范围（默认全套，授权专项测试自行裁剪）
+AUTH_ARGS = [
+    "--subject", "S01",
+    "--consent-ref", "consent/S01-2026-09-23.pdf",
+    "--access", "训练组",
+    "--retention", "90d",
+    "--delete-scope", "全部素材与元数据",
+]
 
-def run_client(phone: MockPhone, out: Path, token: str = TOKEN, duration: float | None = None):
+
+def run_client(phone: MockPhone, out: Path, token: str = TOKEN, duration: float | None = None,
+               extra: list[str] | None = None):
     cmd = [sys.executable, str(SCRIPT), "--port", str(phone.port), "--token", token, "--out", str(out)]
+    cmd += AUTH_ARGS
+    if extra is not None:
+        cmd += extra
     if duration is not None:
         cmd += ["--duration", str(duration)]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -184,3 +199,73 @@ def test_duration_stop(tmp_path):
     assert summary["status"] == "CLIENT_STOP"
     assert summary["frames"] == 0
     assert phone.received[0]["type"] == "AUTH_REQ"
+
+
+# --------------------------------------------------------------- 授权（§2.8.3）
+
+
+def test_missing_authorization_refuses_persist(tmp_path):
+    # 授权要素缺一（未给 --subject/--consent-ref/…）→ 不连接、不落盘，退出码 5
+    phone = MockPhone(TOKEN)
+    phone.start([("auth_ok",)])
+    cmd = [sys.executable, str(SCRIPT), "--port", str(phone.port),
+           "--token", TOKEN, "--out", str(tmp_path)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    assert r.returncode == 5
+    assert "--subject" in r.stderr and "--consent-ref" in r.stderr
+    assert "--retention" in r.stderr and "--delete-scope" in r.stderr and "--access" in r.stderr
+    assert not list(tmp_path.iterdir()), "未明确授权不得建立素材目录"
+
+
+def test_invalid_retention_refuses_persist(tmp_path):
+    # 保留期限不可解析 → 不持久化
+    phone = MockPhone(TOKEN)
+    phone.start([("auth_ok",)])
+    cmd = [sys.executable, str(SCRIPT), "--port", str(phone.port), "--token", TOKEN,
+           "--out", str(tmp_path)] + AUTH_ARGS
+    cmd[cmd.index("--retention") + 1] = "forever"
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    assert r.returncode == 5
+    assert "保留期限" in r.stderr
+    assert not list(tmp_path.iterdir())
+
+
+def test_authorization_record_written(tmp_path):
+    # 授权成立 → authorization.json 记录四要素 + 相机/采样配置 + 标签
+    script = [
+        ("auth_ok",), ("config", W, H, 30),
+        ("frame", 0, PTS_STEP, W, H, i420_frame(W, H, 1)),
+        ("end", "COMPLETE", None, 0, PTS_STEP, PTS_STEP),
+    ]
+    phone = MockPhone(TOKEN)
+    phone.start(script)
+    r = run_client(phone, tmp_path, extra=["--label", "今天天气很好", "--position", "胸前挂载"])
+    phone.wait()
+    assert r.returncode == 0, r.stderr
+
+    seg = only_segment(tmp_path)
+    auth = json.loads((seg / "authorization.json").read_text(encoding="utf-8"))
+    assert auth["subjectId"] == "S01"
+    assert auth["consentRef"] == "consent/S01-2026-09-23.pdf"
+    assert auth["accessors"] == "训练组"
+    assert auth["deleteScope"] == "全部素材与元数据"
+    expected_expiry = (datetime.date.today() + datetime.timedelta(days=90)).isoformat()
+    assert auth["retention"] == {"raw": "90d", "expiresOn": expected_expiry}
+    assert auth["position"] == "胸前挂载"
+    assert auth["label"] == "今天天气很好"
+    assert auth["sessionId"] == phone.session_id
+    # 相机/固件与采样配置来自 SESSION_CONFIG
+    assert auth["camera"] == {"model": "GO 3S", "firmware": "v9.0.59"}
+    spec = auth["captureSpec"]
+    assert spec["captureSpecVersion"] == "1" and spec["pixelFormat"] == "I420"
+    assert spec["width"] == W and spec["height"] == H and spec["captureFps"] == 30
+    assert spec["preprocessVersion"] == "i420-compact-1"
+    assert auth["modelVersion"] is None      # 训练后回填，不把模型猜测当真值
+    assert auth["captureStartedAt"]
+
+    # summary 引用授权 + 标签起止
+    summary = read_summary(tmp_path)
+    assert summary["authorization"] == {"subjectId": "S01", "consentRef": "consent/S01-2026-09-23.pdf"}
+    assert summary["label"] == "今天天气很好"
+    assert summary["startedAt"] and summary["endedAt"]
+    assert summary["startedAt"] <= summary["endedAt"]

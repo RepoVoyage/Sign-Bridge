@@ -81,6 +81,7 @@ class MockPhone:
                     "pixelFormat": "I420", "width": w, "height": h, "captureFps": fps,
                     "bufferTargetMs": 2000, "maxPayloadBytes": 33_554_432,
                     "preprocessVersion": "i420-compact-1",
+                    "cameraModel": "GO 3S", "cameraFirmware": "v9.0.59",
                 })
             elif kind == "frame":
                 _, idx, pts_us, w, h, payload = step

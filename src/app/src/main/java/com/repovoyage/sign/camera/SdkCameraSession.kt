@@ -88,6 +88,15 @@ class SdkCameraSession(
     @Volatile
     var decodedFrameSink: DecodedFrameSink? = null
 
+    /** 相机静态信息（§2.8.3 采集元数据；连接成功时刷新，取 SDK 缓存不发起 RPC） */
+    @Volatile
+    var cameraModel: String? = null
+        private set
+
+    @Volatile
+    var cameraFirmware: String? = null
+        private set
+
     private val appContext = context.applicationContext
     private val connectivityManager =
         appContext.getSystemService(ConnectivityManager::class.java)
@@ -529,6 +538,8 @@ class SdkCameraSession(
     private suspend fun onConnected(camera: CameraDevice) {
         goto(SessionState.Preparing)
         initialAttemptFailures = 0
+        cameraModel = camera.system.getCameraType().getOrNull()?.displayName
+        cameraFirmware = camera.system.getFirmwareRevision().getOrNull()
         registerSystemListeners(camera)
         startHealthWatch(camera)
         // 连接完成后立即开流（相机无流空闲会休眠）；onParamsChanged → Streaming(params)

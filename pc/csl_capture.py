@@ -1,28 +1,34 @@
 #!/usr/bin/env python3
-"""CSL 训练采集 PC 客户端（API.md §9 USB 线协议 v1 接收端）。
+"""CSL 训练采集 PC 客户端（API.md §9 USB 线协议 v1 接收端 + §2.8.3 授权流程）。
 
 前置：`adb forward tcp:9999 tcp:9999`（多手机各自 -s 指定序列号与端口）。
-用法：
+用法（授权四要素 + 删除范围缺一不开始持久化，ARCHITECTURE.md §2.8.3）：
   uv run csl_capture.py --token <训练版通知栏显示的配对令牌> --out <素材目录> \
-      [--duration 60]
+      --subject <匿名受试者编号> --consent-ref <授权记录关联> \
+      --access <访问者> --retention <90d|ISO 日期> --delete-scope <删除范围> \
+      [--label <人工标注文本>] [--position <机位>] [--duration 60]
 
 落盘结构（一个连接 = 一个采集段，段内追加写、段间不拼接，§9.4）：
   <out>/<时间戳>_<sessionId>/
-    frames.i420    紧凑 I420 像素逐帧追加
-    meta.jsonl     每帧一行：frameIndex/ptsUs/尺寸/offset/len（可重切单帧）
-    summary.json   END 结果 + 完整性校验账目
+    authorization.json  授权记录 + 相机/采样配置 + 标签（可追溯）
+    frames.i420         紧凑 I420 像素逐帧追加
+    meta.jsonl          每帧一行：frameIndex/ptsUs/尺寸/offset/len（可重切单帧）
+    summary.json        END 结果 + 完整性校验账目 + 标签起止
 
 校验（§9.3 PC 侧）：每帧 payloadLen 与尺寸×I420 计算值一致，拒绝未知格式；
 序号连续性在 END 时核对，status=COMPLETE 但有缺口/序号不符按协议违规上报。
 
 退出码：0 = END COMPLETE 且校验通过，或 --duration 到时主动停；
-2 = AUTH 失败；3 = 样本不完整（素材已保存）；4 = 协议/完整性校验违规。
+2 = AUTH 失败；3 = 样本不完整（素材已保存）；4 = 协议/完整性校验违规；
+5 = 授权未成立（要素缺失/保留期限不可解析，未持久化任何数据）。
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
+import re
 import select
 import socket
 import struct
@@ -106,19 +112,64 @@ def require_type(header: dict, expected: str) -> None:
         raise ProtocolError(f"期待 {expected}，收到 {header.get('type')!r}")
 
 
+def _wall_now() -> str:
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def parse_retention(raw: str) -> dict | None:
+    """保留期限解析：'90d'（起始日起 N 天）或 ISO 日期；非法返回 None。"""
+    m = re.fullmatch(r"\s*(\d+)\s*d\s*", raw)
+    if m:
+        expires = datetime.date.today() + datetime.timedelta(days=int(m.group(1)))
+        return {"raw": raw.strip(), "expiresOn": expires.isoformat()}
+    try:
+        datetime.date.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    return {"raw": raw.strip(), "expiresOn": raw.strip()}
+
+
 # --------------------------------------------------------------------- 采集段
 
 
 class SegmentStore:
-    """一个连接一个采集段：追加写帧 + 逐帧元数据 + END 完整性校验账目。"""
+    """一个连接一个采集段：授权记录 + 追加写帧 + 逐帧元数据 + END 完整性校验账目。"""
 
-    def __init__(self, root: Path, session_id: str, config: dict):
+    def __init__(self, root: Path, session_id: str, config: dict, auth: dict):
         self.dir = root / f"{time.strftime('%Y%m%d_%H%M%S')}_{session_id[:8]}"
         self.dir.mkdir(parents=True)
         self.session_id = session_id
         self.config = config
+        self.auth = auth
+        self.started_at = _wall_now()
         self._frames = open(self.dir / "frames.i420", "wb")
         self._meta = open(self.dir / "meta.jsonl", "w", encoding="utf-8")
+        # 授权记录（§2.8.3：受试者/授权关联/相机固件/机位/采样配置/标签，可追溯）
+        (self.dir / "authorization.json").write_text(
+            json.dumps({
+                "subjectId": auth["subjectId"],
+                "consentRef": auth["consentRef"],
+                "accessors": auth["accessors"],
+                "retention": auth["retention"],
+                "deleteScope": auth["deleteScope"],
+                "position": auth.get("position"),
+                "label": auth.get("label"),
+                "sessionId": session_id,
+                "camera": {
+                    "model": config.get("cameraModel"),
+                    "firmware": config.get("cameraFirmware"),
+                },
+                "captureSpec": {
+                    "captureSpecVersion": config.get("captureSpecVersion"),
+                    "pixelFormat": config.get("pixelFormat"),
+                    "width": config.get("width"),
+                    "height": config.get("height"),
+                    "captureFps": config.get("captureFps"),
+                    "preprocessVersion": config.get("preprocessVersion"),
+                },
+                "modelVersion": None,   # 训练后回填；不把模型猜测当人工真值
+                "captureStartedAt": self.started_at,
+            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         self.frame_count = 0
         self.byte_count = 0
         self.first_pts_us: int | None = None
@@ -201,7 +252,7 @@ def check_frame(header: dict, payload: bytes) -> None:
             f"实际 {len(payload)}，{w}×{h} I420 应为 {expected}")
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, auth: dict) -> int:
     started = time.monotonic()
     try:
         sock = socket.create_connection((args.host, args.port), timeout=5.0)
@@ -233,7 +284,7 @@ def run(args: argparse.Namespace) -> int:
             raise ProtocolError(f"不支持的 pixelFormat：{config.get('pixelFormat')!r}")
         send(sock, {"type": "CONFIG_ACK", "accepted": True})
 
-        store = SegmentStore(Path(args.out), session_id, dict(config))
+        store = SegmentStore(Path(args.out), session_id, dict(config), auth)
         last_send = last_recv = time.monotonic()
 
         # 主循环：select 收消息，空闲 2s 发心跳（§9.1）
@@ -303,6 +354,13 @@ def run(args: argparse.Namespace) -> int:
                 "sessionId": store.session_id,
                 "status": status,
                 "reason": reason,
+                "authorization": {
+                    "subjectId": store.auth["subjectId"],
+                    "consentRef": store.auth["consentRef"],
+                },
+                "label": store.auth.get("label"),
+                "startedAt": store.started_at,
+                "endedAt": _wall_now(),
                 "frames": store.frame_count,
                 "bytes": store.byte_count,
                 "elapsedS": round(elapsed, 3),
@@ -331,15 +389,49 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="CSL 训练采集 PC 客户端（API.md §9）")
+    parser = argparse.ArgumentParser(description="CSL 训练采集 PC 客户端（API.md §9 + §2.8.3）")
     parser.add_argument("--token", required=True, help="训练版通知栏显示的配对令牌")
     parser.add_argument("--out", required=True, help="素材落盘目录")
     parser.add_argument("--host", default="127.0.0.1", help="默认 127.0.0.1（adb forward）")
     parser.add_argument("--port", type=int, default=9999)
     parser.add_argument("--duration", type=float, default=None,
                         help="到时主动断开（吞吐测试用，样本按 CLIENT_STOP 记）")
+    # §2.8.3 授权要素（缺一不持久化）
+    parser.add_argument("--subject", help="匿名受试者编号（必填）")
+    parser.add_argument("--consent-ref", help="授权记录关联，如文件路径/编号（必填）")
+    parser.add_argument("--access", help="访问者范围（必填）")
+    parser.add_argument("--retention", help="保留期限：'90d' 或 ISO 日期（必填）")
+    parser.add_argument("--delete-scope", help="到期删除范围（必填）")
+    parser.add_argument("--label", help="人工标注文本（可空；不用模型猜测当真值）")
+    parser.add_argument("--position", help="机位描述（可空）")
     args = parser.parse_args(argv)
-    return run(args)
+
+    required = [
+        ("--subject", args.subject, "匿名受试者编号"),
+        ("--consent-ref", args.consent_ref, "授权记录关联"),
+        ("--access", args.access, "访问者范围"),
+        ("--retention", args.retention, "保留期限"),
+        ("--delete-scope", args.delete_scope, "删除范围"),
+    ]
+    missing = [flag for flag, val, _ in required if not val]
+    if missing:
+        print(f"授权未成立，缺少 {', '.join(missing)}"
+              f"（§2.8.3：未明确授权或期限不开始持久化，未连接未落盘）", file=sys.stderr)
+        return 5
+    retention = parse_retention(args.retention)
+    if retention is None:
+        print(f"保留期限无法解析：{args.retention!r}（支持 '90d' 或 ISO 日期）", file=sys.stderr)
+        return 5
+    auth = {
+        "subjectId": args.subject,
+        "consentRef": args.consent_ref,
+        "accessors": args.access,
+        "retention": retention,
+        "deleteScope": args.delete_scope,
+        "position": args.position,
+        "label": args.label,
+    }
+    return run(args, auth)
 
 
 if __name__ == "__main__":

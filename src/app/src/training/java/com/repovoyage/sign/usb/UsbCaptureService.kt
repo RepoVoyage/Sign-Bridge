@@ -78,7 +78,12 @@ class UsbCaptureService : Service() {
                 .put("captureFps", 30)
                 .put("bufferTargetMs", 2_000)
                 .put("maxPayloadBytes", FrameCodec.MAX_IMAGE_PAYLOAD_BYTES)
-                .put("preprocessVersion", "i420-compact-1"),
+                .put("preprocessVersion", "i420-compact-1")
+                .apply {
+                    // §2.8.3 采集元数据：相机型号/固件（连接时快照，未知则省略字段）
+                    cameraSession.cameraModel?.let { put("cameraModel", it) }
+                    cameraSession.cameraFirmware?.let { put("cameraFirmware", it) }
+                },
             pool = p,
         )
         pool = p

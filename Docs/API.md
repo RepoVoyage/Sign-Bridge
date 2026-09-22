@@ -445,7 +445,7 @@ Header 公共字段：`"proto"`（整数协议版本，当前为 1，不兼容�
 |---|---|---|---|
 | `AUTH_REQ` | PC→手机 | 无 | `{"token":"…","clientInfo":"pc-training/x.y"}`；token 为训练版显示的临时配对令牌，不入日志 |
 | `AUTH_RESULT` | 手机→PC | 无 | `{"ok":true,"sessionId":"…"}` / `{"ok":false,"reason":"BAD_TOKEN\|AUTH_TIMEOUT"}` |
-| `SESSION_CONFIG` | 手机→PC | 无 | `{"captureSpecVersion":"…","pixelFormat":"I420\|RGB888","width":…,"height":…,"captureFps":…,"bufferTargetMs":2000,"maxPayloadBytes":…,"preprocessVersion":"…"}` |
+| `SESSION_CONFIG` | 手机→PC | 无 | `{"captureSpecVersion":"…","pixelFormat":"I420\|RGB888","width":…,"height":…,"captureFps":…,"bufferTargetMs":2000,"maxPayloadBytes":…,"preprocessVersion":"…","cameraModel":"…","cameraFirmware":"…"}`（相机字段供 §2.8.3 素材元数据，连接前未知可省略） |
 | `CONFIG_ACK` | PC→手机 | 无 | `{"accepted":true}`；false 或超时即关闭。协商结果不得超过 §9.2 上限 |
 | `FRAME` | 手机→PC | 紧凑像素 | header 见下 |
 | `GAP_EVENT` | 手机→PC | 无 | 缺帧/编码恢复/重连/过载中断，PC 不将前后帧拼连续样本 |
