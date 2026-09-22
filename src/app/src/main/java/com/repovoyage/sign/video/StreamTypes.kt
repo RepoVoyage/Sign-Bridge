@@ -1,0 +1,20 @@
+package com.repovoyage.sign.video
+
+import com.arashivision.sdk.camera.api.preview.PreviewStreamType
+
+/** API.md §2.1 — SDK 回调入口；进入本层前已完成有界复制，取得所有权 */
+data class StreamChunk(
+    val data: ByteArray,
+    val timestampMs: Long,               // 相机时钟，同帧分片共享
+    val type: PreviewStreamType,         // 仅 VIDEO 类型进入聚合
+    val receivedAtMonoMs: Long,
+    val streamGeneration: Long,
+)
+
+/** timestamp 切换提交的聚合帧；未确认完整的尾帧丢弃 */
+data class EncodedFrame(
+    val data: ByteArray,
+    val ptsUs: Long,                     // ms → µs
+    val isSyncPoint: Boolean,            // 仅经验证的随机访问帧（H.264 IDR 等）
+    val streamGeneration: Long,
+)

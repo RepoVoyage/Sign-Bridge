@@ -1,49 +1,101 @@
 package com.repovoyage.sign.p6
 
+import com.repovoyage.sign.sentence.BoundaryReliability
+import com.repovoyage.sign.sentence.BoundarySignal
+import com.repovoyage.sign.sentence.BoundarySource
+import com.repovoyage.sign.sentence.RecognitionUpdate
+import com.repovoyage.sign.sentence.SentenceEvent
+import com.repovoyage.sign.sentence.SentenceManager
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Ignore
 import org.junit.Test
 
 /**
- * P6 识别与句子管理验收（plan.md §1 P6；契约见 API.md §4/§5）。
- * SentenceManager 是纯状态机，全部路径可单测。P6 开工时逐条写成真测试。
+ * P6 句子管理验收（API.md §4/§5 / ARCHITECTURE §2.4.3）。
+ * 开工时移除 @Ignore：先红（TODO）→ 实现 → 绿。
  */
 @Ignore("P6：待 SentenceManager 实现（契约见 API.md §4/§5）")
 class SentenceManagerTest {
 
+    private val manager = SentenceManager(sessionId = "s-1", streamGeneration = 3)
+
+    private fun update(
+        seg: String?, text: String, epoch: Long = 1,
+        boundary: BoundarySignal? = null, confidence: Float? = 0.8f,
+    ) = RecognitionUpdate(epoch, seg, text, null, confidence, boundary)
+
+    private fun reliable() =
+        BoundarySignal(9_000, 300, BoundaryReliability.RELIABLE, BoundarySource.MODEL)
+
+    private fun uncertain() =
+        BoundarySignal(9_000, 300, BoundaryReliability.UNCERTAIN, BoundarySource.MODEL)
+
     @Test
     fun `重叠窗口更新同段草稿且 revision 递增`() {
-        fail("P6 待实现：同一 segmentId 的 DraftUpdated revision 单调 +1，草稿覆盖")
+        assertEquals(
+            listOf(SentenceEvent.DraftUpdated("m1", 1, "我")),
+            manager.submit(update("m1", "我")),
+        )
+        assertEquals(
+            listOf(SentenceEvent.DraftUpdated("m1", 2, "我需要")),
+            manager.submit(update("m1", "我需要")),
+        )
     }
 
     @Test
-    fun `RELIABLE 边界进入 FINALIZING 并 2 秒内 FINAL`() {
-        fail("P6 待实现：BoundarySignal.RELIABLE → Finalizing → Final(ConfirmedSentence 冻结)")
+    fun `segmentId 为空时开新段`() {
+        val events = manager.submit(update(null, "你好"))
+        val draft = events.filterIsInstance<SentenceEvent.DraftUpdated>().single()
+        assertTrue(draft.segmentId.isNotBlank())
+        assertEquals(1, draft.revision)
     }
 
     @Test
-    fun `UNCERTAIN 边界转待核对不阻塞后续表达`() {
-        fail("P6 待实现：→NeedsConfirmation，后续新段照常推进")
+    fun `RELIABLE 边界进入 FINALIZING`() {
+        manager.submit(update("m1", "我"))
+        val events = manager.submit(update("m1", "我需要", boundary = reliable()))
+        assertTrue(SentenceEvent.Finalizing("m1") in events)
     }
 
     @Test
-    fun `FINAL 冻结后迟到推理不覆盖`() {
-        fail("P6 待实现：冻结后到达的旧 revision/旧 epoch 结果丢弃")
+    fun `UNCERTAIN 边界转待核对且不阻塞后续表达`() {
+        manager.submit(update("m1", "我"))
+        val events = manager.submit(update("m1", "我", boundary = uncertain()))
+        assertTrue(events.any { it is SentenceEvent.NeedsConfirmation && it.segmentId == "m1" })
+        // 后续新段照常推进
+        assertTrue(manager.submit(update("m2", "谢谢")).any { it is SentenceEvent.DraftUpdated })
     }
 
     @Test
-    fun `断流缺帧过载使未生效请求过期`() {
-        fail("P6 待实现：sequenceEpoch +1 后旧推理结果丢弃，自然换段不增 epoch")
+    fun `finalize 冻结原文且迟到推理不覆盖`() {
+        manager.submit(update("m1", "我"))
+        manager.submit(update("m1", "我需要"))
+        val events = manager.finalize("m1", startPtsUs = 0, endPtsUs = 9_000)
+        val s = events.filterIsInstance<SentenceEvent.Final>().single().sentence
+        assertEquals("我需要", s.rawChinese)
+        assertEquals(2, s.revision)
+        assertEquals(0L, s.startPtsUs)
+        assertEquals(9_000L, s.endPtsUs)
+        assertEquals("s-1", s.sessionId)
+        assertEquals(3L, s.streamGeneration)
+        assertEquals(false, s.userConfirmed)          // 自动确认
+        // 冻结后迟到草稿被丢弃
+        assertTrue(manager.submit(update("m1", "我需要帮")).isEmpty())
     }
 
     @Test
-    fun `INTERRUPTED 段不自动播报可补字幕`() {
-        fail("P6 待实现：Interrupted 事件不进 TTS 自动队列")
+    fun `epoch 前进中断旧段且旧 epoch 迟到结果丢弃`() {
+        manager.submit(update("m1", "我"))
+        val events = manager.submit(update(null, "新句", epoch = 2))
+        assertTrue(events.any { it is SentenceEvent.Interrupted && it.segmentId == "m1" })
+        // 旧 epoch 的迟到更新不再推进任何段
+        assertTrue(manager.submit(update("m1", "旧结果", epoch = 1)).isEmpty())
     }
 
     @Test
     fun `用户放弃待核对项转 DISCARDED`() {
-        fail("P6 待实现：Discarded 事件后该段不再出现在待核对列表")
+        manager.submit(update("m1", "我", boundary = uncertain()))
+        assertTrue(SentenceEvent.Discarded("m1") in manager.discard("m1"))
     }
-
-    private fun fail(message: String): Nothing = throw NotImplementedError(message)
 }

@@ -1,50 +1,123 @@
 package com.repovoyage.sign.p3
 
+import com.arashivision.sdk.camera.api.preview.PreviewStreamType
+import com.repovoyage.sign.video.EncodedFrame
+import com.repovoyage.sign.video.FrameAssembler
+import com.repovoyage.sign.video.StreamChunk
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Ignore
 import org.junit.Test
 
 /**
- * P3 取流 + 解码验收（plan.md §1 P3；数据契约见 API.md §2，队列初始值 §2.3）。
- * App 侧最高技术风险阶段：帧边界、时间戳、有界队列三块都可单测，
- * MediaCodec 本身靠真机压测。P3 开工时逐条写成真测试。
+ * P3 分片聚合验收（ARCHITECTURE.md §2.2.1 / API.md §2）。
+ * 开工时移除 @Ignore：先红（TODO）→ 实现 → 绿。
  */
-@Ignore("P3：待帧聚合/解码链实现（契约见 API.md §2）")
+@Ignore("P3：待 FrameAssembler 实现（契约见 ARCHITECTURE §2.2.1）")
 class FrameAggregationTest {
 
-    @Test
-    fun `同 timestamp 分片聚合为单帧`() {
-        fail("P3 待实现：多片同 ts 拼接，输出一个 EncodedFrame，长度=分片之和")
+    private val assembler = FrameAssembler()
+    private val committed = mutableListOf<EncodedFrame>()
+
+    private fun offer(tsMs: Long, vararg bytes: Int, type: PreviewStreamType = PreviewStreamType.VIDEO,
+                      monoMs: Long = 0, generation: Long = 1) {
+        committed += assembler.offer(
+            StreamChunk(bytes.map { it.toByte() }.toByteArray(), tsMs, type, monoMs, generation)
+        )
     }
 
     @Test
-    fun `timestamp 切换时提交前一帧`() {
-        fail("P3 待实现：新 ts 到达 → 先提交旧帧再开始新聚合")
+    fun `同 timestamp 分片聚合为单帧且毫秒转微秒`() {
+        offer(100, 1, 2)
+        offer(100, 3, 4)
+        offer(100, 5, 6)
+        assertTrue(committed.isEmpty())
+        offer(200, 9)
+        assertEquals(1, committed.size)
+        val f = committed.single()
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4, 5, 6), f.data)
+        assertEquals(100_000L, f.ptsUs)
+        assertEquals(1L, f.streamGeneration)
+        // 聚合层不判定关键帧，isSyncPoint 由解码准备链的验证器标记
+        assertFalse(f.isSyncPoint)
     }
 
     @Test
-    fun `未确认完整的尾帧丢弃`() {
-        fail("P3 待实现：流结束时未凑齐的聚合缓冲不产出 EncodedFrame")
+    fun `timestamp 切换提交上一帧`() {
+        offer(10, 1)
+        offer(20, 2)                       // 提交 t=10
+        offer(30, 3)                       // 提交 t=20
+        assertEquals(2, committed.size)
+        assertEquals(10_000L, committed[0].ptsUs)
+        assertEquals(20_000L, committed[1].ptsUs)
     }
 
     @Test
-    fun `聚合超限丢弃并重新同步`() {
-        fail("P3 待实现：单帧 4 MiB / 同 timestamp 500ms 超限 → 丢当前聚合，等参数集+关键帧重同步")
+    fun `非视频分片被忽略不进聚合`() {
+        offer(100, 1, type = PreviewStreamType.GYRO)
+        offer(100, 2, type = PreviewStreamType.AUDIO)
+        offer(200, 9)
+        assertTrue(committed.isEmpty())
+        offer(300, 8)                      // 提交仅含视频分片的帧
+        assertEquals(1, committed.size)
+        assertArrayEquals(byteArrayOf(9), committed.single().data)
     }
 
     @Test
-    fun `毫秒转微秒且不跨时钟比较`() {
-        fail("P3 待实现：ptsUs = timestampMs × 1000；队列年龄/超时只用 monoMs")
+    fun `未确认完整的尾帧在流结束时丢弃`() {
+        offer(100, 1, 2)
+        assertTrue(assembler.finish().isEmpty())
     }
 
     @Test
-    fun `旧 streamGeneration 数据不进入当前帧流`() {
-        fail("P3 待实现：重连后旧代次分片被丢弃")
+    fun `聚合超过 4MiB 丢弃并等待新 timestamp 重同步`() {
+        val big = ByteArray(3 * 1024 * 1024)
+        committed += assembler.offer(StreamChunk(big, 100, PreviewStreamType.VIDEO, 0, 1))
+        committed += assembler.offer(StreamChunk(big, 100, PreviewStreamType.VIDEO, 0, 1))   // 6MiB 超限
+        offer(100, 7)                      // 同 timestamp 残片：重同步中忽略
+        offer(200, 8)                      // 新 timestamp 干净起步
+        offer(300, 9)                      // 提交 [8]
+        assertEquals(1, committed.size)
+        assertArrayEquals(byteArrayOf(8), committed.single().data)
     }
 
     @Test
-    fun `只有验证过的关键帧标记 isSyncPoint`() {
-        fail("P3 待实现：参数集后首个 IDR 才可作随机访问点")
+    fun `同 timestamp 跨度超 500 毫秒丢弃并重同步`() {
+        offer(100, 1, monoMs = 0)
+        offer(100, 2, monoMs = 499)        // 未超时
+        offer(100, 3, monoMs = 501)        // 超时 → 丢弃当前聚合
+        offer(100, 4, monoMs = 600)        // 重同步中忽略
+        offer(200, 5, monoMs = 700)
+        offer(300, 6, monoMs = 800)        // 提交 [5]
+        assertEquals(1, committed.size)
+        assertArrayEquals(byteArrayOf(5), committed.single().data)
     }
 
-    private fun fail(message: String): Nothing = throw NotImplementedError(message)
+    @Test
+    fun `streamGeneration 切换丢弃旧缓冲不混帧`() {
+        offer(100, 1, generation = 1)
+        offer(100, 2, generation = 1)
+        offer(100, 3, generation = 2)      // 代次切换：旧缓冲丢弃
+        offer(200, 4, generation = 2)      // 提交新代次首帧
+        assertEquals(1, committed.size)
+        assertArrayEquals(byteArrayOf(3), committed.single().data)
+        assertEquals(2L, committed.single().streamGeneration)
+    }
+
+    @Test
+    fun `代次回退的旧数据被忽略`() {
+        offer(100, 1, generation = 2)
+        offer(100, 2, generation = 1)      // 旧代次分片：忽略
+        offer(200, 3, generation = 2)
+        assertEquals(1, committed.size)
+        assertArrayEquals(byteArrayOf(1), committed.single().data)
+    }
+
+    @Test
+    @Ignore("P3：IDR/NAL 验证与 CSD 组织属解码准备链，聚合层之外")
+    fun `仅验证过的关键帧标记 isSyncPoint`() {
+        throw NotImplementedError("P3：参数集后首个 IDR 才可作随机访问点")
+    }
 }
