@@ -16,3 +16,8 @@ local.properties
 .cxx/
 .externalNativeBuild/
 captures/
+
+# ---- Python（PC 客户端）----
+pc/.venv/
+__pycache__/
+.pytest_cache/
