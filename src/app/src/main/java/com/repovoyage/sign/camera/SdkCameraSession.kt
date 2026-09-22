@@ -84,6 +84,10 @@ class SdkCameraSession(
     private val _decodeStats = MutableStateFlow<DecodeStats?>(null)
     val decodeStats: StateFlow<DecodeStats?> = _decodeStats.asStateFlow()
 
+    /** 解码输出消费方（flavor 注入，API.md §2.2）；null = 仅统计（P3 验证期形态） */
+    @Volatile
+    var decodedFrameSink: DecodedFrameSink? = null
+
     private val appContext = context.applicationContext
     private val connectivityManager =
         appContext.getSystemService(ConnectivityManager::class.java)
@@ -215,12 +219,18 @@ class SdkCameraSession(
     private fun startStreaming(camera: CameraDevice) {
         val generation = ++streamGenerationCounter
         val queue = ChunkIngestQueue(
-            onOverload = { emitEvent(SessionEvent.StreamOverload(OverloadLocation.ENCODE_ENTRY)) },
+            onOverload = {
+                emitEvent(SessionEvent.StreamOverload(OverloadLocation.ENCODE_ENTRY))
+                decodedFrameSink?.onOverload(OverloadLocation.ENCODE_ENTRY)
+            },
         )
         val assembler = FrameAssembler()
         val prep = H264DecodePrep()
         val frameQueue = DecodeFrameQueue(
-            onOverload = { emitEvent(SessionEvent.StreamOverload(OverloadLocation.DECODER)) },
+            onOverload = {
+                emitEvent(SessionEvent.StreamOverload(OverloadLocation.DECODER))
+                decodedFrameSink?.onOverload(OverloadLocation.DECODER)
+            },
         )
         val gate = DecodeSyncGate()
         val job = scope.launch(Dispatchers.IO) { consumeChunks(camera, queue, assembler, prep, frameQueue) }
@@ -282,10 +292,12 @@ class SdkCameraSession(
         prep: H264DecodePrep,
     ) {
         var decoder: SurfacelessH264Decoder? = null
+        var gatedGeneration = -1L
         val resync: () -> Unit = {
             frameQueue.clear()
             decoder?.flush()
             gate.reset()
+            decodedFrameSink?.onGap(FrameGapEvent(GapReason.DECODE_RESET, gatedGeneration))
             scope.launch { runCatching { camera.preview.requestStreamIframe() } }
         }
         val rebuild: () -> Unit = {
@@ -293,6 +305,7 @@ class SdkCameraSession(
             decoder?.stop()
             decoder = null
             gate.reset()
+            decodedFrameSink?.onGap(FrameGapEvent(GapReason.DECODE_RESET, gatedGeneration))
             scope.launch { runCatching { camera.preview.requestStreamIframe() } }
         }
         try {
@@ -301,6 +314,13 @@ class SdkCameraSession(
                 if (frameQueue.isOverloaded) {
                     resync()
                     continue
+                }
+                // 换代 = 断流重连：旧代残留帧与新一代之间必有缺口
+                if (frame.streamGeneration != gatedGeneration) {
+                    if (gatedGeneration >= 0) {
+                        decodedFrameSink?.onGap(FrameGapEvent(GapReason.RECONNECT, frame.streamGeneration))
+                    }
+                    gatedGeneration = frame.streamGeneration
                 }
                 if (!gate.shouldFeed(frame)) continue
                 if (decoder == null) {
@@ -333,7 +353,7 @@ class SdkCameraSession(
         }
     }
 
-    /** 解码输出（P3 验证期仅记统计；像素消费方 P4/P6 接入） */
+    /** 解码输出：记统计 + 送 flavor 注入的 sink（API.md §2.2；P4 起接入） */
     private fun onDecodedFrame(frame: DecodedFrame) {
         val st = _decodeStats.value
         _decodeStats.value = DecodeStats(
@@ -342,6 +362,7 @@ class SdkCameraSession(
             width = frame.width,
             height = frame.height,
         )
+        decodedFrameSink?.onFrame(frame)
     }
 
     /**

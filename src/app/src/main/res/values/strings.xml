@@ -11,6 +11,9 @@
     <string name="scan_hint">点击「扫描相机」开始</string>
     <string name="scan_button">扫描相机（10 秒）</string>
     <string name="stop_button">停止会话</string>
+    <!-- 采集入口仅 training 显示（CaptureEntry.isAvailable），production 不渲染 -->
+    <string name="capture_start_button">开始采集服务（USB）</string>
+    <string name="capture_stop_button">停止采集服务</string>
     <string name="scanning">扫描中…</string>
     <string name="found_n_devices">发现 %1$d 台设备</string>
     <string name="scan_finished">扫描完成：%1$d 台设备</string>

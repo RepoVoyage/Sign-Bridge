@@ -43,7 +43,8 @@ class UsbBridgeServer(
     private var acceptThread: Thread? = null
 
     @Volatile private var stopped = false          // 用户/服务停止（服务级，终态）
-    @Volatile private var segmentBroken = false    // 采集段背压中断
+    @Volatile private var segmentBroken = false    // 采集段已中断（背压/连续性失效）
+    @Volatile private var segmentBreakReason: String? = null
     @Volatile private var readerDone = false       // reader 已退出（断连/违规/停止）
 
     /** reader/offer 线程 → pump 的控制消息（含 GAP_EVENT） */
@@ -102,11 +103,27 @@ class UsbBridgeServer(
             -> false
             else -> {
                 // CAPACITY / OLDEST_FRAME_TIMEOUT / NO_PROGRESS：中断采集段（§9.4 过载）
-                segmentBroken = true
-                controlSends.add(gapEvent("OVERLOAD", startPtsUs = ptsUs, endPtsUs = ptsUs))
+                breakSegment("OVERLOAD", gapEvent("OVERLOAD", startPtsUs = ptsUs, endPtsUs = ptsUs))
                 false
             }
         }
+    }
+
+    /**
+     * 解码链连续性失效上报（DecodedFrameSink.onGap/onOverload 语义）：
+     * 中断当前采集段——GAP_EVENT + END INCOMPLETE + 断开，PC 重连续段
+     * （前后帧不得拼连续样本，API.md §9.3 GAP_EVENT）。幂等。
+     */
+    fun reportGap(reason: String) {
+        breakSegment(reason, gapEvent(reason, startPtsUs = validEndPtsUs, endPtsUs = validEndPtsUs))
+    }
+
+    /** 中断当前采集段（记原因 + 入队 GAP_EVENT）；幂等，停止后不再中断 */
+    private fun breakSegment(reason: String, gap: JSONObject) {
+        if (segmentBroken || stopped) return
+        segmentBroken = true
+        segmentBreakReason = reason
+        controlSends.add(gap)
     }
 
     /** 用户停止：拒绝新帧、2 秒内收尾既有帧、发 END、关连接（阻塞至收尾完成） */
@@ -159,6 +176,7 @@ class UsbBridgeServer(
             validStartPtsUs = -1
             validEndPtsUs = -1
             segmentBroken = false
+            segmentBreakReason = null
         }
         readerDone = false
         controlSends.clear()
@@ -193,13 +211,13 @@ class UsbBridgeServer(
                     }
                     break
                 }
-                // 3. 背压中断（GAP_EVENT 已在步骤 1 写出）
+                // 3. 采集段中断（GAP_EVENT 已在步骤 1 写出）
                 if (segmentBroken) {
                     if (controlSends.isNotEmpty()) {   // offer 刚入队的 GAP：下轮先写它
                         Thread.sleep(10)
                         continue
                     }
-                    finish(out, incomplete = true, reason = "OVERLOAD")
+                    finish(out, incomplete = true, reason = segmentBreakReason ?: "OVERLOAD")
                     break
                 }
                 // 4. 帧写出（串行写通道）
@@ -219,8 +237,7 @@ class UsbBridgeServer(
                         // 帧流开始后连续 1 秒无写入进展（无新帧入队、无帧写出）→ 缺帧
                         // 不能静默拼接 → 中断采集段。段尚未开始出帧（PC 已连、相机未出帧）
                         // 不算停滞；write 阻塞由 offer 线程的最老帧超时兜底。
-                        segmentBroken = true
-                        controlSends.add(gapEvent("OVERLOAD", startPtsUs = validEndPtsUs, endPtsUs = validEndPtsUs))
+                        breakSegment("OVERLOAD", gapEvent("OVERLOAD", startPtsUs = validEndPtsUs, endPtsUs = validEndPtsUs))
                         continue
                     }
                 }

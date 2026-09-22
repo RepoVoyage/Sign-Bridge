@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">手语翻译·训练</string>
+    <string name="capture_service_channel_name">采集服务</string>
+    <string name="capture_service_notification_title">USB 采集服务运行中</string>
+    <string name="capture_service_notification_text">等待 PC 经 adb forward 连接 127.0.0.1:9999</string>
+    <string name="capture_service_token_text">配对令牌：%1$s（PC 连接时输入）</string>
 </resources>

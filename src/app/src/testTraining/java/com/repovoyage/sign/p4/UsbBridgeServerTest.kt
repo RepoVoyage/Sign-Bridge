@@ -147,6 +147,28 @@ class UsbBridgeServerTest {
     }
 
     @Test
+    fun `解码链连续性失效中断采集段并发 GAP_EVENT 与 INCOMPLETE`() {
+        val s = server(pool())
+        s.start()
+        val (client, codec) = handshaken(s)
+
+        // 相机断电重连/解码重建 → sink onGap → reportGap：中断段，PC 重连续段
+        s.reportGap("RECONNECT")
+
+        val gap = codec.readMessage()
+        assertTrue(gap != null)
+        assertEquals("GAP_EVENT", gap!!.header.getString("type"))
+        assertEquals("RECONNECT", gap.header.getString("reason"))
+        val end = codec.readMessage()
+        assertTrue(end != null)
+        assertEquals("INCOMPLETE", end!!.header.getString("status"))
+        assertEquals("RECONNECT", end.header.getString("reason"))
+        assertNull(codec.readMessage())
+        client.close()
+        s.stop()
+    }
+
+    @Test
     fun `token 错误回 BAD_TOKEN 并关闭且恢复可连接`() {
         val s = server(pool())
         s.start()

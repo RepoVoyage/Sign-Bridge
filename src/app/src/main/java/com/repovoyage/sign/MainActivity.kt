@@ -18,6 +18,8 @@ import com.arashivision.sdk.camera.api.CameraDevice
 import com.arashivision.sdk.camera.core.callback.BleScanCallback
 import com.arashivision.sdk.camera.core.model.ConnectType
 import com.repovoyage.sign.camera.CameraSession
+import com.repovoyage.sign.capture.CaptureEntry
+import com.repovoyage.sign.capture.CaptureEntryImpl
 import com.repovoyage.sign.camera.SdkCameraSession
 import com.repovoyage.sign.camera.SessionState
 import com.repovoyage.sign.service.CameraBridgeForegroundService
@@ -37,6 +39,9 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** 采集入口（flavor 注入：training 可用，production 不可用且无按钮） */
+    private val captureEntry: CaptureEntry = CaptureEntryImpl
 
     private var session: CameraSession? = null
     private val sessionJobs = mutableListOf<Job>()
@@ -102,6 +107,17 @@ class MainActivity : AppCompatActivity() {
         root.addView(statsText)
         root.addView(scanButton)
         root.addView(stopButton)
+        // 采集入口：仅 training（production 的 CaptureEntryImpl 不可用，无入口）
+        if (captureEntry.isAvailable) {
+            root.addView(Button(this).apply {
+                text = getString(R.string.capture_start_button)
+                setOnClickListener { captureEntry.start(this@MainActivity) }
+            })
+            root.addView(Button(this).apply {
+                text = getString(R.string.capture_stop_button)
+                setOnClickListener { captureEntry.stop(this@MainActivity) }
+            })
+        }
         root.addView(deviceContainer)
         setContentView(ScrollView(this).apply { addView(root) })
     }
