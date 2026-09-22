@@ -59,4 +59,6 @@ dependencies {
     implementation(libs.inskmp.camera)
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
+    // 单测用真实 org.json（android.jar stub 不可执行）；测试 classpath 优先，不影响运行时
+    testImplementation("org.json:json:20240303")
 }
