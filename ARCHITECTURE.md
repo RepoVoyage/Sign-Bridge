@@ -744,6 +744,20 @@ App 初始化 SDK、设置与 DI
 
 补充：SDK 2.1.5 Demo 包内含可直接安装的 `AndroidSDKDemo/app-debug-2.1.5_*.apk`。第 0 周门禁（连接 GO 3S、授权、开流、观察实际分辨率/帧率与延迟）优先直接安装该 APK 实测，不必先搭建自研工程。
 
+**P0 门禁实测记录（2026-09-22，Demo APK + GO 3S 固件 v9.0.59 + 小米手机/MIUI）**：
+
+| 项 | 实测结果 |
+|---|---|
+| 连接流程 | 通过：BLE 扫描列表的 Wi-Fi 按钮（BLE→读热点→系统热点确认→绑网→connect）一次成功；首页"W-Fi 直连"入口要求手机已在相机网络，否则约 5 秒超时失败，错误码 **-214**（可映射为"未连接相机热点"提示） |
+| 激活 | 相机已激活（`activate_time` 有值），无需再走激活流程 |
+| 普通预览流 | H.264，30fps，主流 640×360 + 副流 640×480，约 4Mbps，无音频，带 gyro；**实际编码尺寸 640×384**（5:3 鱼眼，声明值≠实际值）；CSD 61 字节随流发送；开流后约 2 秒出图；渲染稳定 30fps |
+| 高分辨率取流 | **可行**：`VIDEO_LIVE` 模式下主流跟随相机 `video_resolution` 设置，实测 3840×1920@30 开流成功（主流 4K + 副流 640×360 并行）。1080p 路线：设 `video_resolution` 为 1080p 档 + live 模式开流，**不需要真正推 RTMP**（开流与推流是独立步骤）。普通 `VIDEO_NORMAL` 预览才固定 640×360 |
+| 公开 API 分辨率控制 | `startStream()` 无参；分辨率由模式与相机设置决定；`setVideoBitrate(Int)` 可调码率；`startLive(CameraLiveParams)` 可指定 w/h/fps/bitrate 但属 RTMP 推流路径 |
+| 发热 | 取流期间电池温度 52→55°C 持续上升，过热管理列为实测项 |
+| 时钟怪癖 | 直播开流瞬间出现 `Gyro timestamp ahead Frame timestamp` 告警，印证 §2.2.2 相机/手机时钟不可混用的设计 |
+| 日志泄露佐证 | Demo 日志明文打印热点 SSID/密码（`wifi_info`）与完整 RTMP URL（含 stream key）——本项目日志脱敏规则（§2.1.1、§2.6）有官方反例佐证 |
+| OEM 差异 | MIUI 冻结后台 Demo 进程（Greeze/adbd 拒绝 JDWP）实证，前台服务存活须在 P2 验证 |
+
 ---
 
 ## 9. 明确排除项
