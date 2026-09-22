@@ -3,9 +3,7 @@
 *.iml
 
 # ---- Insta360 官方 SDK 及文档（第三方专有/体积大，仓库公开故不入库）----
-Android-SDK/
-Android-SDK-2.1.5.zip
-SDK-docs/
+reference/
 
 # ---- 日志 ----
 *.log
