@@ -13,10 +13,20 @@ import com.arashivision.inskmp.insble.data.BleDeviceCore
 import com.arashivision.sdk.camera.api.CameraDevice
 import com.arashivision.sdk.camera.api.param.listener.BatteryListener
 import com.arashivision.sdk.camera.api.param.listener.DisconnectListener
+import com.arashivision.sdk.camera.api.preview.CameraStreamListener
+import com.arashivision.sdk.camera.api.preview.PreviewStreamFrame
+import com.arashivision.sdk.camera.api.preview.PreviewStreamParamsUpdate
+import com.arashivision.sdk.camera.api.preview.PreviewStreamType
 import com.arashivision.sdk.camera.core.model.ConnectType
 import com.arashivision.sdk.camera.core.model.option.BatteryData
+import com.arashivision.sdk.camera.core.model.option.VideoEncode
 import com.arashivision.sdk.camera.core.model.option.WiFiData
+import com.repovoyage.sign.video.ChunkIngestQueue
+import com.repovoyage.sign.video.FrameAssembler
+import com.repovoyage.sign.video.StreamChunk
+import com.repovoyage.sign.video.StreamStats
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -33,15 +43,17 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
 /**
- * CameraSession 的 Insta360 SDK 实现（P2：连接链路 + 断连重连；取流在 P3 接入，
- * 故正常路径止于 Preparing，Authorizing 语义暂映射为 WIFI connect 全程）。
+ * CameraSession 的 Insta360 SDK 实现（P2 连接链路 + P3 取流：连接后立即开流，
+ * 分片经入口队列聚合，参数上报后进入 Streaming；解码在后续接入）。
+ * Authorizing 语义映射为 WIFI connect 全程。
  *
  * 连接链路照 Demo ConnectionViewModel 抄录：
  * BLE connect(isBleOnly=false) → ensureApMode → getWifiData → connectSystemWifi
  * → bindProcessToNetwork → release BLE → WIFI connect(networkHandle)。
  *
  * 线程模型：所有状态机变更与 SDK 调用收敛在 scope 的单线程上下文（Main）；
- * DisconnectListener / BatteryListener 回调先 hop 回该上下文再处理。
+ * DisconnectListener / BatteryListener 回调先 hop 回该上下文再处理；
+ * onStreamDataNotify 在回调线程只做过滤/复制/入队，消费在 IO 协程。
  * 日志红线：不得输出热点 SSID/密码与 networkHandle。
  */
 class SdkCameraSession(
@@ -57,6 +69,10 @@ class SdkCameraSession(
     private val _events = MutableSharedFlow<SessionEvent>(extraBufferCapacity = 32)
     override val events: SharedFlow<SessionEvent> = _events.asSharedFlow()
 
+    /** P3 验证期取流统计（单写者：分片消费协程） */
+    private val _streamStats = MutableStateFlow<StreamStats?>(null)
+    val streamStats: StateFlow<StreamStats?> = _streamStats.asStateFlow()
+
     private val appContext = context.applicationContext
     private val connectivityManager =
         appContext.getSystemService(ConnectivityManager::class.java)
@@ -68,6 +84,22 @@ class SdkCameraSession(
     private var attemptWatchdogJob: Job? = null
     private var healthWatchJob: Job? = null
     private var systemWifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * 进行中的取流（一次 startStream 一个实例）：入口队列 + 聚合器 + 消费协程。
+     * 每次开流 generation 递增；旧实例的数据回调与分片因代次/实例不匹配被丢弃。
+     */
+    private class ActiveStream(
+        val camera: CameraDevice,
+        val generation: Long,
+        val queue: ChunkIngestQueue,
+        val assembler: FrameAssembler,
+        val job: Job,
+    )
+
+    @Volatile
+    private var activeStream: ActiveStream? = null
+    private var streamGenerationCounter = 0L
 
     /** stop()/release() 触发的 SDK 断连回调不算被动断连（Demo 同名开关） */
     @Volatile
@@ -115,6 +147,135 @@ class SdkCameraSession(
         }
     }
 
+    // ---------------------------------------------------------------- 取流
+
+    private val streamListener = object : CameraStreamListener {
+        override fun onOpening() {
+        }
+
+        override fun onOpened() {
+            // 立即请求关键帧，加快出首帧（官方建议）
+            scope.launch {
+                runCatching { currentDevice?.preview?.requestStreamIframe() }
+            }
+        }
+
+        override fun onIdle() {
+            Log.w(TAG, "streamListener.onIdle")
+        }
+
+        override fun onParamsChanged(paramsUpdate: PreviewStreamParamsUpdate) {
+            if (paramsUpdate.previewWidth > 0 &&
+                paramsUpdate.previewHeight > 0 &&
+                paramsUpdate.previewFps > 0
+            ) {
+                scope.launch { onStreamParams(paramsUpdate) }
+            }
+        }
+
+        override fun onStreamDataNotify(frame: PreviewStreamFrame) {
+            // 回调线程不定：只过滤、有界复制、入队，不做解码/转换/阻塞（§2.2.1-1）
+            if (frame.type != PreviewStreamType.VIDEO) return
+            val stream = activeStream ?: return
+            // SDK 未承诺回调后数组不复用，复制取得所有权（§2.2.1-2）
+            val chunk = StreamChunk(
+                frame.data.copyOf(),
+                frame.timestamp,
+                frame.type,
+                SystemClock.elapsedRealtime(),
+                stream.generation,
+            )
+            stream.queue.offer(chunk)
+        }
+    }
+
+    /** 连接完成后立即开流：相机在已连接无流空闲态约 1 分钟自动休眠（plan.md 真机发现） */
+    private fun startStreaming(camera: CameraDevice) {
+        val generation = ++streamGenerationCounter
+        val queue = ChunkIngestQueue(
+            onOverload = { emitEvent(SessionEvent.StreamOverload(OverloadLocation.ENCODE_ENTRY)) },
+        )
+        val assembler = FrameAssembler()
+        val job = scope.launch(Dispatchers.IO) { consumeChunks(camera, queue, assembler) }
+        activeStream = ActiveStream(camera, generation, queue, assembler, job)
+        runCatching {
+            camera.preview.init(appContext as android.app.Application)
+            camera.preview.registerCameraStreamListener(streamListener)
+            camera.preview.startStream()
+        }.onFailure {
+            Log.w(TAG, "startStream failed: ${it.message}")
+            stopStreaming()
+            failAttempt("startStream failed: ${it.message}")
+        }
+    }
+
+    /** 分片消费协程：聚合提交帧 + 过载恢复（清空旧数据/重同步/请求关键帧） */
+    private suspend fun CoroutineScope.consumeChunks(
+        camera: CameraDevice,
+        queue: ChunkIngestQueue,
+        assembler: FrameAssembler,
+    ) {
+        while (isActive) {
+            val chunk = queue.receive()
+            if (queue.isOverloaded) {
+                queue.clear()
+                // 重建同步状态：丢弃聚合中的半帧，等待新 timestamp
+                assembler.finish()
+                scope.launch { runCatching { camera.preview.requestStreamIframe() } }
+                continue
+            }
+            val frames = assembler.offer(chunk)
+            if (frames.isNotEmpty()) {
+                val st = _streamStats.value
+                _streamStats.value = StreamStats(
+                    generation = chunk.streamGeneration,
+                    framesCommitted = (st?.framesCommitted ?: 0) + frames.size,
+                    bytesCommitted = (st?.bytesCommitted ?: 0) + frames.sumOf { it.data.size },
+                    lastPtsUs = frames.last().ptsUs,
+                )
+            }
+        }
+    }
+
+    /** 首个有效参数上报 → Streaming；编码类型运行时查询，失败不得默认（§2.2.2） */
+    private suspend fun onStreamParams(update: PreviewStreamParamsUpdate) {
+        if (machine.state is SessionState.Streaming) return
+        val camera = currentDevice ?: return
+        val encode = fetchEncodeTypeWithRetry(camera)
+        if (encode == null) {
+            // 查询失败不能默认为 H.264（§2.2.2）：留在 Preparing，等下一次参数回调重试
+            Log.w(TAG, "fetchVideoEncodeType failed; waiting for next onParamsChanged")
+            return
+        }
+        val stream = activeStream ?: return
+        goto(
+            SessionState.Streaming(
+                StreamParams(update.previewWidth, update.previewHeight, update.previewFps, encode, stream.generation),
+            ),
+        )
+    }
+
+    private suspend fun fetchEncodeTypeWithRetry(camera: CameraDevice): VideoEncodeType? {
+        repeat(ENCODE_QUERY_RETRIES) {
+            when (camera.system.fetchVideoEncodeType().getOrNull()) {
+                VideoEncode.ENCODE_H264 -> return VideoEncodeType.H264
+                VideoEncode.ENCODE_H265 -> return VideoEncodeType.H265
+                else -> delay(ENCODE_QUERY_RETRY_INTERVAL_MS)
+            }
+        }
+        return null
+    }
+
+    /** 停流清理：取消消费协程 → 关闭队列 → 注销监听 → stopStream（须在 release 前） */
+    private fun stopStreaming() {
+        val stream = activeStream ?: return
+        activeStream = null
+        stream.job.cancel()
+        stream.queue.close()
+        runCatching { stream.camera.preview.unregisterCameraStreamListener(streamListener) }
+        runCatching { stream.camera.preview.stopStream() }
+    }
+
     // ---------------------------------------------------------------- API
 
     override suspend fun start(bleDevice: BleDeviceCore) {
@@ -130,6 +291,7 @@ class SdkCameraSession(
         machine.onUserStop()
         publish()
         suppressDisconnectCallback = true
+        stopStreaming()
         connectionAttemptJob?.cancel()
         connectionAttemptJob = null
         cancelAttemptWatchdog()
@@ -214,7 +376,8 @@ class SdkCameraSession(
         initialAttemptFailures = 0
         registerSystemListeners(camera)
         startHealthWatch(camera)
-        // P3 接入：loadJson/能力查询/开流 → Streaming(params)，streamGeneration 递增
+        // 连接完成后立即开流（相机无流空闲会休眠）；onParamsChanged → Streaming(params)
+        startStreaming(camera)
     }
 
     // ------------------------------------------------------------- 重连
@@ -467,6 +630,7 @@ class SdkCameraSession(
         connectionAttemptJob?.cancel()
         connectionAttemptJob = null
         suppressDisconnectCallback = true
+        stopStreaming()
         unregisterSystemListeners()
         val device = currentDevice
         currentDevice?.unregisterDisconnectListener(disconnectListener)
@@ -540,5 +704,7 @@ class SdkCameraSession(
         const val INITIAL_RETRY_DELAY_MS = 2_000L
         const val SYSTEM_WIFI_TIMEOUT_MS = 10_000L
         const val ATTEMPT_TIMEOUT_MS = 60_000L
+        const val ENCODE_QUERY_RETRIES = 3
+        const val ENCODE_QUERY_RETRY_INTERVAL_MS = 1_000L
     }
 }

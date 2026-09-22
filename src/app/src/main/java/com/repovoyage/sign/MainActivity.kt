@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
@@ -17,6 +18,8 @@ import com.arashivision.sdk.camera.api.CameraDevice
 import com.arashivision.sdk.camera.core.callback.BleScanCallback
 import com.arashivision.sdk.camera.core.model.ConnectType
 import com.repovoyage.sign.camera.CameraSession
+import com.repovoyage.sign.camera.SdkCameraSession
+import com.repovoyage.sign.camera.SessionState
 import com.repovoyage.sign.service.CameraBridgeForegroundService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +27,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -40,6 +44,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var stateText: TextView
     private lateinit var statusText: TextView
+    private lateinit var statsText: TextView
     private lateinit var deviceContainer: LinearLayout
     private lateinit var scanButton: Button
     private lateinit var stopButton: Button
@@ -76,6 +81,10 @@ class MainActivity : AppCompatActivity() {
         statusText = TextView(this).apply {
             text = getString(R.string.scan_hint)
             textSize = 14f
+            setPadding(0, 0, 0, pad / 2)
+        }
+        statsText = TextView(this).apply {
+            textSize = 14f
             setPadding(0, 0, 0, pad)
         }
         scanButton = Button(this).apply {
@@ -90,6 +99,7 @@ class MainActivity : AppCompatActivity() {
 
         root.addView(stateText)
         root.addView(statusText)
+        root.addView(statsText)
         root.addView(scanButton)
         root.addView(stopButton)
         root.addView(deviceContainer)
@@ -203,10 +213,38 @@ class MainActivity : AppCompatActivity() {
         sessionJobs.clear()
         session = s
         sessionJobs += scope.launch {
-            s.state.collect { state -> stateText.text = getString(R.string.state_format, state) }
+            s.state.collect { state ->
+                stateText.text = getString(R.string.state_format, state)
+                if (state !is SessionState.Streaming) statsText.text = ""
+            }
         }
         sessionJobs += scope.launch {
             s.events.collect { event -> statusText.text = getString(R.string.event_format, event) }
+        }
+        // 取流统计 1s 采样（P3 验证期专用，走 SdkCameraSession 具体类型）
+        sessionJobs += scope.launch {
+            var lastFrames = -1L
+            var lastAt = 0L
+            while (isActive) {
+                delay(1_000)
+                val st = (session as? SdkCameraSession)?.streamStats?.value
+                if (st == null) {
+                    lastFrames = -1
+                    continue
+                }
+                if (lastFrames >= 0 && lastAt > 0) {
+                    val fps = (st.framesCommitted - lastFrames) * 1000f / (SystemClock.elapsedRealtime() - lastAt)
+                    statsText.text = getString(
+                        R.string.stream_stats_format,
+                        st.generation,
+                        st.framesCommitted,
+                        fps,
+                        st.bytesCommitted / 1024f / 1024f,
+                    )
+                }
+                lastFrames = st.framesCommitted
+                lastAt = SystemClock.elapsedRealtime()
+            }
         }
     }
 

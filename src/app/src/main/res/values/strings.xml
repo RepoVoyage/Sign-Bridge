@@ -19,4 +19,5 @@
     <string name="service_not_ready">前台服务未就绪</string>
     <string name="unnamed_device">未命名设备 %1$d</string>
     <string name="permission_denied_hint">需要蓝牙权限才能扫描相机，请到系统设置授权</string>
+    <string name="stream_stats_format">取流 gen%1$d｜帧 %2$d｜%3$.1f fps｜%4$.1f MiB</string>
 </resources>

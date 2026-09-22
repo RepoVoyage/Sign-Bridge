@@ -18,3 +18,11 @@ data class EncodedFrame(
     val isSyncPoint: Boolean,            // 仅经验证的随机访问帧（H.264 IDR 等）
     val streamGeneration: Long,
 )
+
+/** P3 真机验证用取流统计；单写者（分片消费协程），验证收敛后移除 */
+data class StreamStats(
+    val generation: Long,
+    val framesCommitted: Long,
+    val bytesCommitted: Long,
+    val lastPtsUs: Long,
+)
