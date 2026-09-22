@@ -321,28 +321,16 @@ data class PolishOutput(
 
 期限【初始值】：本地每句 3 秒、云端 10 秒（从 FINAL 起算，含排队与网络）；多语言共享该期限，已返回语言不回滚，超时语言标 `UNAVAILABLE`。云端失败仅在本地就绪且剩余期限允许时降级。
 
-### 6.3 云端 HTTP 契约（**预留**，启用前单独验收）
+### 6.3 云端直连契约（Chat Completions，`DirectLlmPolisher`）
 
-请求/响应示意（凭据交付方案未定，不写入发布包）：
+App 直连云端 LLM（**中间代理服务已按用户决定移除**，agent 源码保留在 main 分支）：
 
-```json
-POST /v1/polish        (HTTPS, OkHttp 绑定蜂窝 Network)
-{
-  "sessionId": "…", "segmentId": "…", "revision": 3,
-  "rawChinese": "我 需要 帮助",
-  "targetLanguages": ["en-US"],
-  "context": [ { "segmentId": "…", "rawChinese": "…" } ]
-}
-→ 200
-{
-  "segmentId": "…", "revision": 3,
-  "polishedChinese": "我需要帮助",
-  "translations": { "en-US": "I need help" },
-  "issues": []
-}
-```
-
-客户端校验：语言、状态、长度、必要字段与数字/否定差异检查；不构成跨语言语义正确性证明。
+- `POST {LLM_BASE_URL}/chat/completions`，`Authorization: Bearer <LLM_API_KEY>`；
+  `messages` = 保真 system 提示词 + user（`rawChinese/targetLanguages/context` 简化 JSON）
+- 响应取 `choices[0].message.content`（JSON：`polishedChinese/translations/issues`）
+- 客户端 guard 保守启发式（数字/否定/有分隔重复变化、中文冒充外语拦截、未请求语言校验）；不构成跨语言语义正确性证明
+- 上游错误按 HTTP 状态映射（401/403→`MODEL_AUTH_FAILED` 不可重试；429/超时/网络→可重试）；期限内不自动重试
+- 凭据**运行时配置**（App 设置项，用户自持，排除云备份；不写日志）——发布包不内置密钥（§6.3 原约束保持）
 
 ---
 

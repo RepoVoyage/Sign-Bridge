@@ -206,6 +206,14 @@ COMPLETE 但有缺口按协议违规上报。单测 145 条 0 红、38 条分阶
 - `LanguageProcessor`（本地优先，云端留接口）、`TtsManager`、Room 缓存、字幕 UI
 - 验收：否定/数字保真样本集、TTS 去重键、90 天/万条清理、导出
 
+**进度（2026-09-23）**：`LanguageResultGate`/`AutoSpeakQueue`/`SentenceCacheRetention`
+三纯逻辑组件 17 测试全绿；云端语言处理按用户决定**改为 App 直连 LLM**
+（`DirectLlmPolisher`，agent 服务逻辑移植：保真提示词 + guard 启发式 +
+错误映射，7 测试 loopback 联调）；**agent 中间服务路径已移除**（源码保留在
+main 分支），API.md §6.3 改为直连契约，凭据走 App 运行时设置（自持、
+排除备份，发布包不内置密钥）。待做：`LanguageProcessor` 编排、TtsManager、
+Room 落库、字幕/设置 UI。
+
 ### P8 验收（持续，按 ARCHITECTURE.md §8 全表）
 
 每阶段结束跑对应行；发布前全表过一遍 + 持续 30 分钟压力 + 训练隔离检查（productionRelease 无采集入口/端口/落盘）。

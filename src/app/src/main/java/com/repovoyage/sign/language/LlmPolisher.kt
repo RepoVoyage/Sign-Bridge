@@ -15,6 +15,23 @@ interface LlmPolisher {
     suspend fun polish(input: PolishInput, deadlineMonoMs: Long): PolishOutput
 }
 
+/**
+ * 云端失败（超时/网络/上游错误/响应校验）：LanguageProcessor 据此将未完成
+ * 语言标 UNAVAILABLE；`retryable` 仅表示技术上可重试，期限内不自动重试。
+ */
+class CloudPolishException(
+    val code: String,
+    val retryable: Boolean,
+    message: String,
+) : Exception(message) {
+    companion object {
+        const val DEADLINE_EXCEEDED = "DEADLINE_EXCEEDED"      // 预算耗尽，未发起请求
+        const val RESPONSE_MISMATCH = "RESPONSE_MISMATCH"      // 回显 segmentId/revision 不符
+        const val MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"      // 网络层异常
+        const val INVALID_RESPONSE = "MODEL_INVALID_RESPONSE"  // 响应无法解析/字段非法
+    }
+}
+
 /** issue 代码（云端契约 agent/docs/API.md §3）：映射 App 输出状态见 LanguageProcessor */
 enum class FidelityIssueCode { AMBIGUITY, FIDELITY_CHECK_FAILED, UNAVAILABLE }
 
