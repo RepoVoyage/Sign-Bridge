@@ -124,6 +124,139 @@ class SessionStateMachineTest {
     }
 
     @Test
+    fun `重复 start 被拒绝`() {
+        assertTrue(machine.start())
+        assertFalse(machine.start())
+        assertEquals(SessionState.Checking, machine.state)
+    }
+
+    @Test
+    fun `非流式状态忽略断连事件`() {
+        // 逐级走连接梯子，每个非流式状态断言断连事件不推进
+        assertFalse(machine.onDisconnected())                                   // Idle
+        machine.start()
+        assertFalse(machine.onDisconnected())                                   // Checking
+        machine.transitionTo(SessionState.BleConnecting("GO 3S"))
+        assertFalse(machine.onDisconnected())
+        machine.transitionTo(SessionState.WifiConnecting)
+        assertFalse(machine.onDisconnected())
+        machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING))
+        assertFalse(machine.onDisconnected())
+        machine.transitionTo(SessionState.Activating)
+        assertFalse(machine.onDisconnected())                                   // Activating
+        machine.transitionTo(SessionState.Preparing)
+        assertFalse(machine.onDisconnected())                                   // Preparing
+        assertEquals(SessionState.Preparing, machine.state)
+    }
+
+    @Test
+    fun `含激活步骤的首次路径走通`() {
+        assertTrue(machine.start())
+        assertTrue(machine.transitionTo(SessionState.BleConnecting(null)))
+        assertTrue(machine.transitionTo(SessionState.WifiConnecting))
+        assertTrue(machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING)))
+        assertTrue(machine.transitionTo(SessionState.Activating))
+        assertTrue(machine.transitionTo(SessionState.Preparing))
+        assertTrue(machine.transitionTo(SessionState.Streaming(streamParams())))
+        assertTrue(machine.state is SessionState.Streaming)
+    }
+
+    @Test
+    fun `Idle 无事可停`() {
+        assertFalse(machine.onUserStop())
+        assertFalse(machine.onOverheat())
+        assertFalse(machine.onDisconnected())
+        assertEquals(SessionState.Idle, machine.state)
+    }
+
+    @Test
+    fun `停止幂等不重复变更状态`() {
+        reachStreaming()
+        assertTrue(machine.onUserStop())
+        assertFalse(machine.onUserStop())
+        assertEquals(SessionState.Stopping, machine.state)
+    }
+
+    @Test
+    fun `过热仅来自流式且不重复触发`() {
+        reachStreaming()
+        assertTrue(machine.onOverheat())
+        assertEquals(SessionState.PausedHot, machine.state)
+        assertFalse(machine.onOverheat())
+        assertEquals(SessionState.PausedHot, machine.state)
+    }
+
+    @Test
+    fun `冷却恢复仅允许从 PausedHot`() {
+        assertFalse(machine.resumeAfterCooldown())                    // Idle
+        reachStreaming()
+        assertFalse(machine.resumeAfterCooldown())                    // Streaming
+        machine.onOverheat()
+        assertTrue(machine.resumeAfterCooldown())
+        assertEquals(SessionState.Checking, machine.state)
+    }
+
+    @Test
+    fun `自环与越级转移被拒绝且状态不变`() {
+        assertTrue(machine.start())
+        assertFalse(machine.transitionTo(SessionState.Checking))      // 自环
+        assertFalse(machine.transitionTo(SessionState.WifiConnecting)) // Checking 越级
+        assertEquals(SessionState.Checking, machine.state)
+        machine.transitionTo(SessionState.BleConnecting("GO 3S"))
+        assertFalse(machine.transitionTo(SessionState.BleConnecting("other"))) // 自环
+        assertEquals(SessionState.BleConnecting("GO 3S"), machine.state)
+        machine.transitionTo(SessionState.WifiConnecting)
+        machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING))
+        machine.transitionTo(SessionState.Preparing)
+        machine.transitionTo(SessionState.Streaming(streamParams(generation = 1)))
+        // 流式自环不允许直接换参数：新代次必须经 Preparing 重进
+        assertFalse(machine.transitionTo(SessionState.Streaming(streamParams(generation = 2))))
+        assertEquals(1, (machine.state as SessionState.Streaming).params.streamGeneration)
+    }
+
+    @Test
+    fun `Error 状态只能重试或停止，不直接回 Idle`() {
+        reachStreaming()
+        repeat(6) { machine.onDisconnected() }
+        assertEquals(SessionState.Error(SessionError.RETRY_EXHAUSTED), machine.state)
+        assertFalse(machine.transitionTo(SessionState.Idle))
+        // 用户停止优先于一切：Error 下放弃也走停止清理
+        assertTrue(machine.onUserStop())
+        assertTrue(machine.transitionTo(SessionState.Idle))
+    }
+
+    @Test
+    fun `过热后放弃冷却走停止`() {
+        reachStreaming()
+        assertTrue(machine.onOverheat())
+        assertTrue(machine.onUserStop())
+        assertEquals(SessionState.Stopping, machine.state)
+        assertTrue(machine.transitionTo(SessionState.Idle))
+    }
+
+    @Test
+    fun `停止后可完整重启第二会话`() {
+        reachStreaming()
+        machine.onUserStop()
+        machine.transitionTo(SessionState.Idle)
+        // 第二次会话从零开始，全路径可用
+        reachStreaming()
+        assertTrue(machine.state is SessionState.Streaming)
+    }
+
+    @Test
+    fun `授权拒绝走停止不进重试`() {
+        assertTrue(machine.start())
+        machine.transitionTo(SessionState.BleConnecting("GO 3S"))
+        machine.transitionTo(SessionState.WifiConnecting)
+        machine.transitionTo(SessionState.Authorizing(AuthStatus.DENIED))
+        assertTrue(machine.onUserStop())
+        assertEquals(SessionState.Stopping, machine.state)
+        assertFalse(machine.onDisconnected())
+        machine.transitionTo(SessionState.Idle)
+    }
+
+    @Test
     @Ignore("P2：streamGeneration 递增与旧代次数据抑制在 CameraSession 集成层验证")
     fun `旧代次数据不推进新会话`() {
         throw NotImplementedError("P2 集成项：重连后旧代次帧/回调不得更新当前状态或句子")

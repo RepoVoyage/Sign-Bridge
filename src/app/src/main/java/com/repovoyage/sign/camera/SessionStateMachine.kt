@@ -40,8 +40,11 @@ class SessionStateMachine(
         return true
     }
 
-    /** 冷却后用户确认重新开始：PausedHot → Checking */
-    fun resumeAfterCooldown(): Boolean = transitionTo(SessionState.Checking)
+    /** 冷却后用户确认重新开始：仅 PausedHot → Checking */
+    fun resumeAfterCooldown(): Boolean {
+        if (state != SessionState.PausedHot) return false
+        return transitionTo(SessionState.Checking)
+    }
 
     /** 通用合法转移：合法则更新状态并返回 true；非法保持原状态返回 false */
     fun transitionTo(candidate: SessionState): Boolean {
@@ -72,6 +75,6 @@ class SessionStateMachine(
             to == SessionState.Stopping || to is SessionState.Error
         SessionState.Stopping -> to == SessionState.Idle
         SessionState.PausedHot -> to == SessionState.Checking || to == SessionState.Stopping
-        is SessionState.Error -> to == SessionState.Checking
+        is SessionState.Error -> to == SessionState.Checking || to == SessionState.Stopping
     }
 }

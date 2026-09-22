@@ -34,4 +34,34 @@ class ReconnectPolicyTest {
         policy.onStreamRecovered()
         assertEquals(1_000L, policy.onDisconnected())
     }
+
+    @Test
+    fun `耗尽后 reset 可重新走完整周期`() {
+        repeat(6) { policy.onDisconnected() }
+        assertNull(policy.onDisconnected())
+        policy.onStreamRecovered()
+        // 重置后又是完整序列：5 次有效，第 6 次放弃
+        assertEquals(1_000L, policy.onDisconnected())
+        assertEquals(2_000L, policy.onDisconnected())
+        assertEquals(4_000L, policy.onDisconnected())
+        assertEquals(8_000L, policy.onDisconnected())
+        assertEquals(16_000L, policy.onDisconnected())
+        assertNull(policy.onDisconnected())
+    }
+
+    @Test
+    fun `未断连时 reset 无副作用`() {
+        policy.onStreamRecovered()
+        policy.onStreamRecovered()
+        assertEquals(1_000L, policy.onDisconnected())
+    }
+
+    @Test
+    fun `断连与恢复交错时计数以最近一次恢复为基准`() {
+        assertEquals(1_000L, policy.onDisconnected())
+        assertEquals(2_000L, policy.onDisconnected())
+        policy.onStreamRecovered()
+        assertEquals(1_000L, policy.onDisconnected())
+        assertEquals(2_000L, policy.onDisconnected())
+    }
 }
