@@ -4,43 +4,72 @@ import android.os.SystemClock
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.net.SocketTimeoutException
 
 /**
  * USB 线协议分帧 codec（API.md §9.2 / ARCHITECTURE.md §2.8.2）：
  * `uint32 大端 headerLen | UTF-8 JSON header | payload`，接收端循环读满。
  *
+ * 截止时间从**首字节**起算：收到首字节后 readTimeoutMs 内须读满整条消息（单一
+ * 截止时间，不按小片续期）。首字节前无限期阻塞——配合调用方设置的 soTimeout，
+ * 无任何字节到达时 SocketTimeoutException 外抛，由调用方决定重试或断开；消息
+ * 读到一半的超时唤醒在内部消化，仍受截止时间约束。
+ *
  * 校验失败（长度不符/JSON 非法/超上限/EOF 不满/超截止时间）一律返回 null，
  * 由调用方断开连接。上限【初始值】：JSON header ≤ 16 KiB；图像 payload（FRAME）
- * ≤ 32 MiB；控制消息 payload ≤ 64 KiB。整条消息用单一截止时间（不按小片续期）。
+ * ≤ 32 MiB；控制消息 payload ≤ 64 KiB。
  */
-class FrameCodec(private val input: InputStream) {
+class FrameCodec(
+    private val input: InputStream,
+    private val monoMs: () -> Long = SystemClock::elapsedRealtime,
+) {
 
     data class Message(val header: JSONObject, val payload: ByteArray)
 
     /**
-     * 读一条完整消息；流正常结束返回 null。
-     * @param deadlineMonoMs 整条消息的截止时刻（mono 时钟）；null = 不限时（测试用）
+     * 读一条完整消息；流正常结束/校验失败/超截止时间返回 null。
+     * @param readTimeoutMs 收到首字节后读满整条消息的时限
      */
-    fun readMessage(deadlineMonoMs: Long? = null): Message? {
-        val headerLen = readFull(4, deadlineMonoMs)?.let { it.beUint32() } ?: return null
+    fun readMessage(readTimeoutMs: Long = 2_000): Message? {
+        val prefix = ByteArray(4)
+        var filled = 0
+        var startAt = 0L
+        while (filled < 4) {
+            if (filled > 0 && monoMs() - startAt > readTimeoutMs) return null
+            val n = try {
+                input.read(prefix, filled, 4 - filled)
+            } catch (e: SocketTimeoutException) {
+                if (filled == 0) throw e    // 尚无任何字节：空闲唤醒，交调用方处置
+                continue                     // 已读部分字节：回到截止时间判定
+            }
+            if (n < 0) return null
+            if (filled == 0 && n > 0) startAt = monoMs()
+            filled += n
+        }
+        val deadlineAt = startAt + readTimeoutMs
+        val headerLen = prefix.beUint32()
         if (headerLen <= 0 || headerLen > MAX_HEADER_BYTES) return null
-        val header = readFull(headerLen, deadlineMonoMs)
+        val header = readFull(headerLen, deadlineAt)
             ?.let { runCatching { JSONObject(String(it, Charsets.UTF_8)) }.getOrNull() }
             ?: return null
         val payloadLen = header.optLong("payloadLen", 0L)
         if (payloadLen < 0 || payloadLen > payloadCapFor(header)) return null
-        val payload = readFull(payloadLen.toInt(), deadlineMonoMs) ?: return null
+        val payload = readFull(payloadLen.toInt(), deadlineAt) ?: return null
         return Message(header, payload)
     }
 
-    /** 循环读满 len 字节；EOF 不满/超截止时间返回 null */
-    private fun readFull(len: Int, deadlineMonoMs: Long?): ByteArray? {
+    /** 循环读满 len 字节（首字节已到达，deadlineAt 为整条消息的绝对截止时刻） */
+    private fun readFull(len: Int, deadlineAt: Long): ByteArray? {
         if (len == 0) return ByteArray(0)
         val out = ByteArray(len)
         var filled = 0
         while (filled < len) {
-            if (deadlineMonoMs != null && SystemClock.elapsedRealtime() > deadlineMonoMs) return null
-            val n = input.read(out, filled, len - filled)
+            if (monoMs() > deadlineAt) return null
+            val n = try {
+                input.read(out, filled, len - filled)
+            } catch (e: SocketTimeoutException) {
+                continue    // soTimeout 唤醒：回到截止时间判定
+            }
             if (n < 0) return null
             filled += n
         }

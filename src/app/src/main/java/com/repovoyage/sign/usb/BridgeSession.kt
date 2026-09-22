@@ -32,7 +32,8 @@ class BridgeSession(
     private var lastSentAt = startedAtMonoMs
     private var closed = false
 
-    /** 收到一条完整消息；调用方保证在读取线程串行调用 */
+    /** 收到一条完整消息；由接线层读取线程调用（onTick 可并发来自驱动线程，故加锁） */
+    @Synchronized
     fun onMessage(header: JSONObject, now: Long): Outcome {
         if (closed) return Outcome(emptyList(), true)
         lastReceivedAt = now
@@ -56,6 +57,7 @@ class BridgeSession(
     }
 
     /** 周期驱动：心跳发送与超时判定（认证窗口/空闲超时）；close 后恒返回关闭 */
+    @Synchronized
     fun onTick(now: Long): Outcome {
         if (closed) return Outcome(emptyList(), true)
         val authTimeout = phase == Phase.AWAIT_AUTH && now - startedAtMonoMs >= AUTH_WINDOW_MS

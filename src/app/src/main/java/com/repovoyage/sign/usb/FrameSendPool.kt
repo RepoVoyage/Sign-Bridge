@@ -22,8 +22,15 @@ class FrameSendPool(
     private val noProgressTimeoutMs: Long = 1_000,
 ) {
 
-    /** 待发帧（不含账目字段，账目由池内部跟踪） */
-    data class Frame(val bytes: ByteArray, val frameIndex: Long, val ptsUs: Long)
+    /** 待发帧（不含账目字段，账目由池内部跟踪）；尺寸/代数随帧透传给 FRAME header */
+    data class Frame(
+        val bytes: ByteArray,
+        val frameIndex: Long,
+        val ptsUs: Long,
+        val width: Int = 0,
+        val height: Int = 0,
+        val streamGeneration: Long = 0,
+    )
 
     /** 中断/拒绝原因；ALREADY_BROKEN 表池已中断（非新事件） */
     enum class BreakReason {
@@ -52,6 +59,10 @@ class FrameSendPool(
 
     val breakReason: BreakReason?
         get() = synchronized(lock) { reason }
+
+    /** 队列中是否还有待发帧 */
+    val hasBacklog: Boolean
+        get() = synchronized(lock) { queue.isNotEmpty() }
 
     /**
      * 帧进入发送阶段；null = 接受，非 null = 拒绝并给出原因（触发采集段中断）。

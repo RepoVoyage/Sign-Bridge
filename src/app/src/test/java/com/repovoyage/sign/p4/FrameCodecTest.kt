@@ -32,7 +32,8 @@ class FrameCodecTest {
 
     private fun decode(vararg messages: ByteArray): FrameCodec.Message? {
         val input = ByteArrayInputStream(messages.reduce { a, b -> a + b })
-        return FrameCodec(input).readMessage()
+        // JVM 无 SystemClock：注入恒 0 时钟（deadline 检查恒不触发）
+        return FrameCodec(input, monoMs = { 0L }).readMessage()
     }
 
     @Test
