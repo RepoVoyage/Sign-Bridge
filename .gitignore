@@ -1,0 +1,20 @@
+# ---- IDE ----
+.idea/
+*.iml
+
+# ---- Insta360 官方 SDK 及文档（第三方专有/体积大，仓库公开故不入库）----
+Android-SDK/
+Android-SDK-2.1.5.zip
+SDK-docs/
+
+# ---- 日志 ----
+*.log
+p0-gate-logcat*.txt
+
+# ---- Android 构建产物 ----
+.gradle/
+build/
+local.properties
+.cxx/
+.externalNativeBuild/
+captures/
