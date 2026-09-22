@@ -50,6 +50,7 @@ class BridgeSessionTest {
         assertEquals(2, out.sends.size)
         val authResult = out.sends[0]
         assertEquals("AUTH_RESULT", authResult.getString("type"))
+        assertEquals(1, authResult.getInt("proto"))
         assertTrue(authResult.getBoolean("ok"))
         assertEquals("sid-1", authResult.getString("sessionId"))
         assertEquals("SESSION_CONFIG", out.sends[1].getString("type"))
@@ -60,6 +61,7 @@ class BridgeSessionTest {
     fun `token 错误回 BAD_TOKEN 并断开`() {
         val out = session.onMessage(authReq(token = "wrong"), now = 0)
         assertEquals("AUTH_RESULT", out.sends.single().getString("type"))
+        assertEquals(1, out.sends.single().getInt("proto"))
         assertFalse(out.sends.single().getBoolean("ok"))
         assertEquals("BAD_TOKEN", out.sends.single().getString("reason"))
         assertTrue(out.close)

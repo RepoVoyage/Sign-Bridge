@@ -139,9 +139,33 @@ Result 为 value class 导致方法名混淆）。
 
 | 任务 | 完成标准 |
 |---|---|
-| `UsbBridgeService` + 线协议 v1（API.md §9） | PC 真实 USB 吞吐实测 ≥ 采集规格需求，预算档位定案 |
-| PC Python 客户端（uv 管理） | AUTH/心跳/背压/中断语义联调通过 |
+| ~~`UsbBridgeService` + 线协议 v1（API.md §9）~~ | ✅ 真机实测：60 秒 1799 帧满帧率（30.0 fps）、10.5 MiB/s（理论 11.1）、零 GAP 零缺帧；**预算档位定案 128 MiB**（2026-09-23） |
+| ~~PC Python 客户端（uv 管理）~~ | ✅ 真机联调通过：AUTH/心跳/收帧落盘/完整性校验，END COMPLETE（792 帧）与 --duration 主动停路径实测；模拟手机侧 7 用例联调（2026-09-23） |
 | 采集授权流程与素材元数据 | §2.8.3 授权记录可追溯 |
+
+**进度（2026-09-23，真机吞吐+联调通过）**：协议栈 `FrameCodec`（分帧/两段截止）
+→ `BridgeSession`（握手/心跳/超时状态机）→ `FrameSendPool`（§9.4 背压账目）
+→ `I420.compact`（设备相关布局归一）→ `UsbBridgeServer`（accept/reader/pump 三
+线程，单写者串行写出，新连接重置采集段）→ `DecodedFrameSink`（§2.2 契约，
+解码线程回调）→ `UsbCaptureService`（training FGS，配对令牌仅显示于通知栏）
+→ `CaptureEntry` flavor 缝（production 编译期无采集代码，`compileProductionDebugKotlin`
+通过）。PC 侧 `pc/csl_capture.py`（uv，纯标准库）：AUTH → SESSION_CONFIG 校验
+（仅 I420）→ select 主循环（2s 心跳/6s 静默断开）→ 逐帧校验 payloadLen×尺寸
+落盘（frames.i420 + meta.jsonl 索引 + summary.json）→ END 时核对序号连续性，
+COMPLETE 但有缺口按协议违规上报。单测 145 条 0 红、38 条分阶段 @Ignore。
+
+真机实测（小米 2510DRK44C ← GO 3S 640×384@30 H264 → adb forward）：
+- **吞吐**：60 秒 1799 帧（632.5 MiB）、30.0 fps 满帧率、10.5 MiB/s 持续
+  （640×384 I420 理论 11.1 MiB/s）；128 MiB 池 ≈ 12 秒积压 ≫ 2 秒缓冲目标，
+  **128 MiB 档定案**（256/64 档仅在规格变更时启用）
+- **素材完整性**：序号 0..1798 连续、offset/len 与 640×384×1.5 一致、pts 单调
+  （中位间隔 33000µs）；首帧 I420→RGB 抽查为真实画面
+- **END COMPLETE 路径**：手机 UI「停止采集服务」→ END COMPLETE，PC 退出码 0
+  （792 帧段）；`--duration` 主动停 → CLIENT_STOP（退出码 0，素材保留）
+- 联调修掉一个 spec 偏差：`AUTH_RESULT` 缺 `proto` 公共字段（§9.2）——PC 严格
+  校验揭穿，手机端补齐并加单测断言
+- 采集素材目录示例：`<out>/<时间戳>_<sessionId>/{frames.i420, meta.jsonl,
+  summary.json}`（段间不拼接，GAP 后素材标不完整）
 
 ### P5 训练与模型（外部依赖，**最早启动、最晚交付**）
 
@@ -206,6 +230,7 @@ P0 ──► P1 ──► P2 ──► P3 ──► P4 ──┐
 
 ## 5. 立即的下一步
 
-1. **P4 训练采集通道**：`UsbBridgeService` + 线协议 v1（API.md §9）+ PC Python 客户端
-   （uv 管理）——解码输出已有 `DecodedFrame` 像素源可接 USB 发送池
-2. P5 数据采集与训练尽早启动（外部周期最长）
+1. **P4 收尾**：采集授权流程与素材元数据（§2.8.3 授权记录可追溯）——通道与
+   PC 客户端已真机联调通过（2026-09-23），采集可先行试采
+2. P5 数据采集与训练尽早启动（外部周期最长）；P6 识别与句子管理可依赖
+   ModelSpec 草案并行起步

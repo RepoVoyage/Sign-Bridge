@@ -71,11 +71,13 @@ class UsbCaptureService : Service() {
         val s = UsbBridgeServer(
             token = token,
             sessionConfig = JSONObject()
+                .put("captureSpecVersion", "1")
                 .put("pixelFormat", "I420")
                 .put("width", cameraSession.decodeStats.value?.width ?: 0)
                 .put("height", cameraSession.decodeStats.value?.height ?: 0)
                 .put("captureFps", 30)
                 .put("bufferTargetMs", 2_000)
+                .put("maxPayloadBytes", FrameCodec.MAX_IMAGE_PAYLOAD_BYTES)
                 .put("preprocessVersion", "i420-compact-1"),
             pool = p,
         )

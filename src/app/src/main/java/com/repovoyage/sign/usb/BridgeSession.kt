@@ -76,14 +76,22 @@ class BridgeSession(
             closed = true
             phase = Phase.CLOSED
             return Outcome(
-                listOf(JSONObject().put("type", "AUTH_RESULT").put("ok", false).put("reason", "BAD_TOKEN")),
+                listOf(
+                    JSONObject().put("type", "AUTH_RESULT")
+                        .put("proto", 1)
+                        .put("ok", false)
+                        .put("reason", "BAD_TOKEN"),
+                ),
                 true,
             )
         }
         phase = Phase.AWAIT_CONFIG_ACK
         return Outcome(
             listOf(
-                JSONObject().put("type", "AUTH_RESULT").put("ok", true).put("sessionId", sessionId),
+                JSONObject().put("type", "AUTH_RESULT")
+                    .put("proto", 1)
+                    .put("ok", true)
+                    .put("sessionId", sessionId),
                 JSONObject(sessionConfig.toString())
                     .put("type", "SESSION_CONFIG")
                     .put("proto", 1)
