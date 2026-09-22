@@ -6,9 +6,10 @@ package com.repovoyage.sign.camera
  * 与旧代次数据抑制在 CameraSession 集成层处理，不在此处。
  *
  * 规则：用户停止/权限拒绝/过热不进入断线重试；用户停止优先于任何延迟重试。
- * 被动断连的触发面覆盖"已进入授权"的连接态（Streaming/Reconnecting/Authorizing/
- * Preparing）：断连监听在整个 WIFI connect 期间就已注册，SDK 内部同步阶段的
- * 断连不能被无声丢弃（否则会话永远卡在连接中）。
+ * 被动断连的触发面覆盖"已进入系统热点连接"的连接态（Streaming/Reconnecting/
+ * WifiConnecting/Authorizing/Preparing）：断连监听在整个连接期间就已注册，
+ * SDK 内部同步阶段的断连不能被无声丢弃（否则会话永远卡在连接中）；重连尝试
+ * 中（WifiConnecting 起）的失败同样消耗重试名额，否则退避循环无法推进。
  */
 class SessionStateMachine(
     private val reconnectPolicy: ReconnectPolicy = ReconnectPolicy(),
@@ -28,6 +29,7 @@ class SessionStateMachine(
         val from = state
         val reconnectable = from is SessionState.Streaming ||
             from is SessionState.Reconnecting ||
+            from is SessionState.WifiConnecting ||
             from is SessionState.Authorizing ||
             from is SessionState.Preparing
         if (!reconnectable) return false
@@ -60,6 +62,13 @@ class SessionStateMachine(
     fun transitionTo(candidate: SessionState): Boolean {
         if (!isLegal(state, candidate)) return false
         if (candidate is SessionState.Streaming) {
+            reconnectPolicy.onStreamRecovered()
+            reconnectAttempts = 0
+        }
+        if (candidate is SessionState.Checking) {
+            // 进入 Checking 均为用户发起的新一轮会话（start/resumeAfterCooldown/
+            // Error 后重试）：重试预算随之重置，不残留上一会话的耗尽状态。
+            // 成功出图（→ Streaming）是运行期内的第二个重置点（API.md §1.2）。
             reconnectPolicy.onStreamRecovered()
             reconnectAttempts = 0
         }

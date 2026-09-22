@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -64,6 +65,7 @@ class SdkCameraSession(
     private var currentDevice: CameraDevice? = null
     private var listenersDevice: CameraDevice? = null
     private var connectionAttemptJob: Job? = null
+    private var attemptWatchdogJob: Job? = null
     private var healthWatchJob: Job? = null
     private var systemWifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -130,6 +132,7 @@ class SdkCameraSession(
         suppressDisconnectCallback = true
         connectionAttemptJob?.cancel()
         connectionAttemptJob = null
+        cancelAttemptWatchdog()
         healthWatchJob?.cancel()
         healthWatchJob = null
         unregisterSystemListeners()
@@ -174,7 +177,8 @@ class SdkCameraSession(
             return
         }
         lastWifi = wifi
-        val network = connectSystemWifi(wifi.ssid, wifi.pwd)
+        // 系统对不可用网络可能拖 30s+ 才报 onUnavailable，自设上限保证退避节奏可控
+        val network = withTimeoutOrNull(SYSTEM_WIFI_TIMEOUT_MS) { connectSystemWifi(wifi.ssid, wifi.pwd) }
         if (network == null) {
             failAttempt("system wifi unavailable")
             return
@@ -223,6 +227,7 @@ class SdkCameraSession(
 
         stopHealthWatch()
         // 取消整条连接尝试链路，防止迟到的模式切换超时覆盖刚写入的断连状态（Demo 教训）
+        cancelAttemptWatchdog()
         connectionAttemptJob?.cancel()
         connectionAttemptJob = null
         emitEvent(SessionEvent.Disconnected(cause))
@@ -250,6 +255,7 @@ class SdkCameraSession(
             delay(st.nextRetryInMs)
             // 退避等待期间用户可能已停止会话
             if (machine.state !is SessionState.Reconnecting) return@launch
+            armAttemptWatchdog { onReconnectAttemptFailed("attempt timeout") }
             runReconnect()
         }
     }
@@ -268,7 +274,7 @@ class SdkCameraSession(
             return
         }
         goto(SessionState.WifiConnecting)
-        val network = connectSystemWifi(wifi.ssid, wifi.pwd)
+        val network = withTimeoutOrNull(SYSTEM_WIFI_TIMEOUT_MS) { connectSystemWifi(wifi.ssid, wifi.pwd) }
         if (network == null) {
             onReconnectAttemptFailed("system wifi unavailable")
             return
@@ -286,6 +292,7 @@ class SdkCameraSession(
     private fun onReconnectAttemptFailed(message: String?) {
         Log.w(TAG, "reconnect attempt failed: $message")
         stopHealthWatch()
+        cancelAttemptWatchdog()
         connectionAttemptJob?.cancel()
         connectionAttemptJob = null
         releaseDeviceAndUnbind()
@@ -304,6 +311,8 @@ class SdkCameraSession(
     /** 初连失败：瞬时性错误先自动重试（完整链路），耗尽才 Error */
     private fun failAttempt(message: String?) {
         Log.w(TAG, "connect attempt failed: $message")
+        cancelAttemptWatchdog()
+        connectionAttemptJob?.cancel()
         connectionAttemptJob = null
         stopHealthWatch()
         if (initialAttemptFailures < MAX_INITIAL_RETRIES) {
@@ -321,6 +330,7 @@ class SdkCameraSession(
                     s is SessionState.Preparing
                 val ble = lastBleDevice
                 if (!inConnectLadder || ble == null) return@launch
+                armAttemptWatchdog { failAttempt("attempt timeout") }
                 connectViaBle(ble)
             }
             return
@@ -453,6 +463,7 @@ class SdkCameraSession(
      */
     private fun releaseDeviceAndUnbind() {
         stopHealthWatch()
+        cancelAttemptWatchdog()
         connectionAttemptJob?.cancel()
         connectionAttemptJob = null
         suppressDisconnectCallback = true
@@ -473,6 +484,29 @@ class SdkCameraSession(
     private fun launchAttempt(block: suspend CoroutineScope.() -> Unit) {
         connectionAttemptJob?.cancel()
         connectionAttemptJob = scope.launch { coroutineScope(block) }
+        armAttemptWatchdog { failAttempt("attempt timeout") }
+    }
+
+    /**
+     * 尝试级 watchdog：SDK 的 BLE connect 在相机半死状态下可能内循环重试
+     * 永不返回（真机挂死 108s），无自身超时。60s 上限（正常成功路径 ≤29s），
+     * 超时按尝试失败处理，走既有自动重试/退避。
+     */
+    private fun armAttemptWatchdog(onTimeout: () -> Unit) {
+        val attemptJob = connectionAttemptJob ?: return
+        attemptWatchdogJob?.cancel()
+        attemptWatchdogJob = scope.launch {
+            delay(ATTEMPT_TIMEOUT_MS)
+            if (attemptJob.isActive) {
+                Log.w(TAG, "connect attempt watchdog fired after ${ATTEMPT_TIMEOUT_MS}ms")
+                onTimeout()
+            }
+        }
+    }
+
+    private fun cancelAttemptWatchdog() {
+        attemptWatchdogJob?.cancel()
+        attemptWatchdogJob = null
     }
 
     /** 在当前尝试链路内续挂步骤（onSuccess 回调非 suspend，需显式挂到 root Job） */
@@ -504,5 +538,7 @@ class SdkCameraSession(
         const val DISCONNECT_DEDUPE_MS = 2_000L
         const val MAX_INITIAL_RETRIES = 2
         const val INITIAL_RETRY_DELAY_MS = 2_000L
+        const val SYSTEM_WIFI_TIMEOUT_MS = 10_000L
+        const val ATTEMPT_TIMEOUT_MS = 60_000L
     }
 }

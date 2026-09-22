@@ -65,6 +65,23 @@ class SessionStateMachineTest {
     }
 
     @Test
+    fun `新会话重置上一会话耗尽的重试预算`() {
+        // 真机发现：耗尽的退避额度若跨会话残留，新会话首次断连直接 Error
+        reachStreaming()
+        repeat(6) { machine.onDisconnected() }
+        assertEquals(SessionState.Error(SessionError.RETRY_EXHAUSTED), machine.state)
+        // 用户重试 → 进入 Checking 即新会话：预算重置，从 1s 退避重新开始
+        //（P2 止于 Preparing 无出图，也不受影响）
+        assertTrue(machine.transitionTo(SessionState.Checking))
+        machine.transitionTo(SessionState.BleConnecting("GO 3S"))
+        machine.transitionTo(SessionState.WifiConnecting)
+        machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING))
+        machine.transitionTo(SessionState.Preparing)
+        assertTrue(machine.onDisconnected())
+        assertEquals(SessionState.Reconnecting(1, 1_000L), machine.state)
+    }
+
+    @Test
     fun `成功出图后重试计数清零`() {
         reachStreaming()
         repeat(3) { machine.onDisconnected() }
@@ -132,7 +149,7 @@ class SessionStateMachineTest {
 
     @Test
     fun `连接尝试阶段忽略断连事件`() {
-        // 逐级走连接梯子，未进入授权前的状态断言断连事件不推进
+        // 逐级走连接梯子，未进入系统热点连接前的状态断言断连事件不推进
         // （此阶段失败走 connect() 回调的 Error 路径，不走退避）
         assertFalse(machine.onDisconnected())                                   // Idle
         machine.start()
@@ -140,7 +157,6 @@ class SessionStateMachineTest {
         machine.transitionTo(SessionState.BleConnecting("GO 3S"))
         assertFalse(machine.onDisconnected())
         machine.transitionTo(SessionState.WifiConnecting)
-        assertFalse(machine.onDisconnected())
         machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING))
         machine.transitionTo(SessionState.Activating)
         assertFalse(machine.onDisconnected())                                   // Activating 需公网，不走退避
@@ -149,9 +165,19 @@ class SessionStateMachineTest {
     }
 
     @Test
+    fun `系统热点连接起的被动断连进入重连`() {
+        // 断连监听在连接全程已注册（含 SDK 内部同步阶段），
+        // 从系统热点连接起的连接态断连须走退避，否则会话无声卡死
+        assertTrue(machine.start())
+        machine.transitionTo(SessionState.BleConnecting("GO 3S"))
+        machine.transitionTo(SessionState.WifiConnecting)
+        assertTrue(machine.onDisconnected())
+        assertEquals(SessionState.Reconnecting(1, 1_000L), machine.state)
+    }
+
+    @Test
     fun `授权与准备阶段的被动断连进入重连`() {
-        // 断连监听在 WIFI connect 全程已注册（含 SDK 内部同步阶段），
-        // 已进入授权的连接态断连须走退避，否则会话无声卡死
+        // 已进入授权的连接态断连须走退避
         assertTrue(machine.start())
         machine.transitionTo(SessionState.BleConnecting("GO 3S"))
         machine.transitionTo(SessionState.WifiConnecting)
@@ -162,6 +188,19 @@ class SessionStateMachineTest {
         machine.transitionTo(SessionState.WifiConnecting)
         machine.transitionTo(SessionState.Authorizing(AuthStatus.WAITING))
         machine.transitionTo(SessionState.Preparing)
+        assertTrue(machine.onDisconnected())
+        assertEquals(SessionState.Reconnecting(2, 2_000L), machine.state)
+    }
+
+    @Test
+    fun `重连尝试失败从 WifiConnecting 消耗重试名额`() {
+        // 真机发现：重连尝试中的系统热点连接失败若不消耗名额，退避循环无法推进，
+        // 状态卡死在 WifiConnecting
+        assertTrue(machine.start())
+        machine.transitionTo(SessionState.BleConnecting("GO 3S"))
+        machine.transitionTo(SessionState.WifiConnecting)
+        machine.onDisconnected()                                            // → Reconnecting(1, 1s)
+        machine.transitionTo(SessionState.WifiConnecting)                   // 重连尝试中
         assertTrue(machine.onDisconnected())
         assertEquals(SessionState.Reconnecting(2, 2_000L), machine.state)
     }
