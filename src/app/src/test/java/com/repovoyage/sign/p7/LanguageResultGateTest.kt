@@ -7,15 +7,12 @@ import com.repovoyage.sign.language.OutputStatus
 import com.repovoyage.sign.sentence.LangCode
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 
 /**
  * P7 语言结果去重门验收（API.md §6.2：去重键 (sessionId, segmentId, sentenceRevision,
  * language) 仅保留一个有效结果；settingsRevision 落后拒绝）。
- * 开工时移除 @Ignore：先红（TODO）→ 实现 → 绿。
  */
-@Ignore("P7：待 LanguageResultGate 实现（契约见 API.md §6.2）")
 class LanguageResultGateTest {
 
     private val gate = LanguageResultGate()

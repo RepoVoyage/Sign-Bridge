@@ -8,15 +8,12 @@ import com.repovoyage.sign.tts.SpeakRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 
 /**
  * P7 自动播报队列验收（API.md §7 初始值：串行一次一条、待播 3 句、
  * 去重键 (sessionId, segmentId, language)、待播 5 秒未开始转未播报）。
- * 开工时移除 @Ignore：先红（TODO）→ 实现 → 绿。
  */
-@Ignore("P7：待 AutoSpeakQueue 实现（契约见 API.md §7）")
 class AutoSpeakQueueTest {
 
     private val queue = AutoSpeakQueue()

@@ -4,14 +4,11 @@ import com.repovoyage.sign.cache.CachedSentenceRecord
 import com.repovoyage.sign.cache.SentenceCacheRetention
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 
 /**
  * P7 缓存保留策略验收（API.md §8 初始值：最近 90 天且 ≤10000 条，任一超限清理）。
- * 开工时移除 @Ignore：先红（TODO）→ 实现 → 绿。
  */
-@Ignore("P7：待 SentenceCacheRetention 实现（契约见 API.md §8）")
 class CacheRetentionTest {
 
     private val policy = SentenceCacheRetention()
@@ -33,8 +30,9 @@ class CacheRetentionTest {
 
     @Test
     fun `超量删最老回到限内`() {
-        // it=1 最新 … it=10001 最老
-        val records = (1..10_001).map { rec("k%05d".format(10_001 - it), it.toLong()) }
+        // 10001 条全部在 90 天内（毫秒级年龄区分新旧）：it=1 最新 … it=10001 最老
+        // （原用例以天为年龄单位，10001 条中 9911 条超龄，与「超龄必删」用例矛盾）
+        val records = (1..10_001).map { CachedSentenceRecord("k%05d".format(10_001 - it), now - it) }
         val evict = policy.evict(records, now)
         assertEquals(1, evict.size)
         assertEquals("k00000", evict.single().key)     // 最老的被清

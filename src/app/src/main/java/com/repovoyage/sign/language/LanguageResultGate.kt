@@ -27,5 +27,21 @@ data class LanguageResult(
  */
 class LanguageResultGate {
 
-    fun accept(result: LanguageResult): Boolean = TODO("P7")
+    private data class DedupKey(
+        val sessionId: String,
+        val segmentId: String,
+        val revision: Int,
+        val language: LangCode,
+    )
+
+    private val acceptedKeys = mutableSetOf<DedupKey>()
+    private var latestSettingsRevision = Long.MIN_VALUE
+
+    fun accept(result: LanguageResult): Boolean {
+        if (result.settingsRevision < latestSettingsRevision) return false
+        latestSettingsRevision = maxOf(latestSettingsRevision, result.settingsRevision)
+        return acceptedKeys.add(
+            DedupKey(result.sessionId, result.segmentId, result.sentenceRevision, result.language),
+        )
+    }
 }
