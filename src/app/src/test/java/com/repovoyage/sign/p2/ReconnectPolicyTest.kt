@@ -8,9 +8,7 @@ import org.junit.Test
 
 /**
  * P2 重连退避（API.md §1.2 初始值：1、2、4、8、16 秒，最多 5 次；成功出图后清零）。
- * P2 开工时移除 @Ignore：先红（TODO 抛异常）→ 实现 → 绿。
  */
-@Ignore("P2：待 ReconnectPolicy 实现（退避序列契约见 API.md §1.2）")
 class ReconnectPolicyTest {
 
     private val policy = ReconnectPolicy()
