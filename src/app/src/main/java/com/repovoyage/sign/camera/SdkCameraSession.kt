@@ -23,6 +23,7 @@ import com.arashivision.sdk.camera.core.model.option.VideoEncode
 import com.arashivision.sdk.camera.core.model.option.WiFiData
 import com.repovoyage.sign.video.ChunkIngestQueue
 import com.repovoyage.sign.video.FrameAssembler
+import com.repovoyage.sign.video.H264DecodePrep
 import com.repovoyage.sign.video.StreamChunk
 import com.repovoyage.sign.video.StreamStats
 import kotlinx.coroutines.CoroutineScope
@@ -94,6 +95,7 @@ class SdkCameraSession(
         val generation: Long,
         val queue: ChunkIngestQueue,
         val assembler: FrameAssembler,
+        val prep: H264DecodePrep,
         val job: Job,
     )
 
@@ -198,8 +200,9 @@ class SdkCameraSession(
             onOverload = { emitEvent(SessionEvent.StreamOverload(OverloadLocation.ENCODE_ENTRY)) },
         )
         val assembler = FrameAssembler()
-        val job = scope.launch(Dispatchers.IO) { consumeChunks(camera, queue, assembler) }
-        activeStream = ActiveStream(camera, generation, queue, assembler, job)
+        val prep = H264DecodePrep()
+        val job = scope.launch(Dispatchers.IO) { consumeChunks(camera, queue, assembler, prep) }
+        activeStream = ActiveStream(camera, generation, queue, assembler, prep, job)
         runCatching {
             camera.preview.init(appContext as android.app.Application)
             camera.preview.registerCameraStreamListener(streamListener)
@@ -211,11 +214,12 @@ class SdkCameraSession(
         }
     }
 
-    /** 分片消费协程：聚合提交帧 + 过载恢复（清空旧数据/重同步/请求关键帧） */
+    /** 分片消费协程：聚合提交帧 → 解码准备链（SPS/PPS/IDR 验证）+ 过载恢复 */
     private suspend fun CoroutineScope.consumeChunks(
         camera: CameraDevice,
         queue: ChunkIngestQueue,
         assembler: FrameAssembler,
+        prep: H264DecodePrep,
     ) {
         while (isActive) {
             val chunk = queue.receive()
@@ -226,7 +230,8 @@ class SdkCameraSession(
                 scope.launch { runCatching { camera.preview.requestStreamIframe() } }
                 continue
             }
-            val frames = assembler.offer(chunk)
+            // 纯参数集/SEI 帧被吸收（null），仅 VCL 帧产出
+            val frames = assembler.offer(chunk).mapNotNull { prep.process(it) }
             if (frames.isNotEmpty()) {
                 val st = _streamStats.value
                 _streamStats.value = StreamStats(
@@ -234,6 +239,7 @@ class SdkCameraSession(
                     framesCommitted = (st?.framesCommitted ?: 0) + frames.size,
                     bytesCommitted = (st?.bytesCommitted ?: 0) + frames.sumOf { it.data.size },
                     lastPtsUs = frames.last().ptsUs,
+                    syncFrames = (st?.syncFrames ?: 0) + frames.count { it.isSyncPoint },
                 )
             }
         }

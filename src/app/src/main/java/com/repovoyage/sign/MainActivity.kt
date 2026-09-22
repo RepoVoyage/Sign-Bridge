@@ -240,6 +240,7 @@ class MainActivity : AppCompatActivity() {
                         st.framesCommitted,
                         fps,
                         st.bytesCommitted / 1024f / 1024f,
+                        st.syncFrames,
                     )
                 }
                 lastFrames = st.framesCommitted

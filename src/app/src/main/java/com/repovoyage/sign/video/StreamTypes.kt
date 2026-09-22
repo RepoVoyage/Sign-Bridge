@@ -25,4 +25,5 @@ data class StreamStats(
     val framesCommitted: Long,
     val bytesCommitted: Long,
     val lastPtsUs: Long,
+    val syncFrames: Long,                // isSyncPoint=true 的帧数（验证 IDR 间隔用）
 )

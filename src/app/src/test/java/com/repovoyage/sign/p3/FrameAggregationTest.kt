@@ -8,7 +8,6 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 
 /**
@@ -112,11 +111,5 @@ class FrameAggregationTest {
         offer(200, 3, generation = 2)
         assertEquals(1, committed.size)
         assertArrayEquals(byteArrayOf(1), committed.single().data)
-    }
-
-    @Test
-    @Ignore("P3：IDR/NAL 验证与 CSD 组织属解码准备链，聚合层之外")
-    fun `仅验证过的关键帧标记 isSyncPoint`() {
-        throw NotImplementedError("P3：参数集后首个 IDR 才可作随机访问点")
     }
 }
