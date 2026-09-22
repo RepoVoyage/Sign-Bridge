@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">手语翻译</string>
+    <string name="scaffold_placeholder">工程骨架就绪（P1）\n相机连接模块开发中</string>
+</resources>
