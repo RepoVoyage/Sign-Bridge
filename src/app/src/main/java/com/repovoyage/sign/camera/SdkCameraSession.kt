@@ -154,9 +154,10 @@ class SdkCameraSession(
         }
 
         override fun onOpened() {
-            // 立即请求关键帧，加快出首帧（官方建议）
             scope.launch {
+                // 立即请求关键帧，加快出首帧（官方建议）
                 runCatching { currentDevice?.preview?.requestStreamIframe() }
+                pollStreamParams()
             }
         }
 
@@ -165,6 +166,7 @@ class SdkCameraSession(
         }
 
         override fun onParamsChanged(paramsUpdate: PreviewStreamParamsUpdate) {
+            Log.i(TAG, "onParamsChanged w=${paramsUpdate.previewWidth} h=${paramsUpdate.previewHeight} fps=${paramsUpdate.previewFps}")
             if (paramsUpdate.previewWidth > 0 &&
                 paramsUpdate.previewHeight > 0 &&
                 paramsUpdate.previewFps > 0
@@ -237,8 +239,32 @@ class SdkCameraSession(
         }
     }
 
-    /** 首个有效参数上报 → Streaming；编码类型运行时查询，失败不得默认（§2.2.2） */
+    /**
+     * GO 3S 实测不触发 onParamsChanged（真机验证 00:56–00:57 全程零回调），
+     * 参数在 onOpened 后主动查询 getPreviewParams 取得。
+     */
+    private suspend fun pollStreamParams() {
+        val camera = currentDevice ?: return
+        repeat(STREAM_PARAMS_POLL_TIMES) {
+            if (machine.state is SessionState.Streaming) return
+            // getPreviewParams 返回 Result<PreviewParams>（非挂起；已销毁时为 failure）
+            val params = runCatching { camera.preview.getPreviewParams().getOrNull() }.getOrNull()
+            val first = params?.firstStream
+            if (first != null && first.width > 0 && first.height > 0 && first.fps > 0) {
+                enterStreaming(first.width, first.height, first.fps)
+                return
+            }
+            delay(STREAM_PARAMS_POLL_INTERVAL_MS)
+        }
+        Log.w(TAG, "stream params unavailable after poll; stay in Preparing")
+    }
+
+    /** 首个有效参数（查询或上报）→ Streaming；编码类型运行时查询，失败不得默认（§2.2.2） */
     private suspend fun onStreamParams(update: PreviewStreamParamsUpdate) {
+        enterStreaming(update.previewWidth, update.previewHeight, update.previewFps)
+    }
+
+    private suspend fun enterStreaming(width: Int, height: Int, fps: Int) {
         if (machine.state is SessionState.Streaming) return
         val camera = currentDevice ?: return
         val encode = fetchEncodeTypeWithRetry(camera)
@@ -248,10 +274,9 @@ class SdkCameraSession(
             return
         }
         val stream = activeStream ?: return
+        Log.i(TAG, "stream params ready: ${width}x${height}@${fps} $encode gen=${stream.generation}")
         goto(
-            SessionState.Streaming(
-                StreamParams(update.previewWidth, update.previewHeight, update.previewFps, encode, stream.generation),
-            ),
+            SessionState.Streaming(StreamParams(width, height, fps, encode, stream.generation)),
         )
     }
 
@@ -706,5 +731,7 @@ class SdkCameraSession(
         const val ATTEMPT_TIMEOUT_MS = 60_000L
         const val ENCODE_QUERY_RETRIES = 3
         const val ENCODE_QUERY_RETRY_INTERVAL_MS = 1_000L
+        const val STREAM_PARAMS_POLL_TIMES = 10
+        const val STREAM_PARAMS_POLL_INTERVAL_MS = 300L
     }
 }
