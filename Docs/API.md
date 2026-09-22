@@ -302,9 +302,11 @@ interface LlmPolisher {
 }
 
 data class PolishInput(
+    // 段身份：云端 HTTP 契约要求随请求发送并回显校验（agent/docs/API.md §2）
+    val sessionId: String, val segmentId: String, val revision: Int,
     val rawChinese: String,
     val targetLanguages: List<LangCode>,      // 仅用户选定的语言；仅中文时不含外语
-    val contextSentences: List<ConfirmedSentence>  // 已确认句子的受限衔接上下文，长度上限见 §0 TBD
+    val contextSentences: List<ConfirmedSentence>  // 已确认句子的受限衔接上下文，最近优先最多 5 条
 )
 
 data class PolishOutput(
