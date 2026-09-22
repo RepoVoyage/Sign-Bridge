@@ -8,14 +8,11 @@ import com.repovoyage.sign.sentence.SentenceEvent
 import com.repovoyage.sign.sentence.SentenceManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 
 /**
  * P6 句子管理验收（API.md §4/§5 / ARCHITECTURE §2.4.3）。
- * 开工时移除 @Ignore：先红（TODO）→ 实现 → 绿。
  */
-@Ignore("P6：待 SentenceManager 实现（契约见 API.md §4/§5）")
 class SentenceManagerTest {
 
     private val manager = SentenceManager(sessionId = "s-1", streamGeneration = 3)
@@ -97,5 +94,27 @@ class SentenceManagerTest {
     fun `用户放弃待核对项转 DISCARDED`() {
         manager.submit(update("m1", "我", boundary = uncertain()))
         assertTrue(SentenceEvent.Discarded("m1") in manager.discard("m1"))
+    }
+
+    @Test
+    fun `中断段的迟到 finalize 被丢弃`() {
+        manager.submit(update("m1", "我"))
+        manager.submit(update(null, "新句", epoch = 2))   // m1 → INTERRUPTED
+        assertTrue(manager.finalize("m1", 0, 9_000).isEmpty())
+    }
+
+    @Test
+    fun `FINALIZING 段被 epoch 前进中断`() {
+        manager.submit(update("m1", "我"))
+        manager.submit(update("m1", "我需要", boundary = reliable()))
+        val events = manager.submit(update(null, "新句", epoch = 2))
+        assertTrue(events.any { it is SentenceEvent.Interrupted && it.segmentId == "m1" })
+    }
+
+    @Test
+    fun `未知段 finalize 与非待核对段 discard 幂等返回空`() {
+        assertTrue(manager.finalize("ghost", 0, 9_000).isEmpty())
+        manager.submit(update("m1", "我"))                 // DRAFT（未转待核对）
+        assertTrue(manager.discard("m1").isEmpty())
     }
 }
