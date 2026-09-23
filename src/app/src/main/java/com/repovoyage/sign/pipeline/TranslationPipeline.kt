@@ -1,5 +1,6 @@
 package com.repovoyage.sign.pipeline
 
+import com.repovoyage.sign.alert.ConfirmationAlerter
 import com.repovoyage.sign.history.SentenceCache
 import com.repovoyage.sign.history.toLanguageResultRecord
 import com.repovoyage.sign.history.toSentenceRecord
@@ -114,6 +115,8 @@ class TranslationPipeline(
     private val finalizeDelayMs: Long = 2_000L,
     /** §2.4.7 蜂窝网络：管线启动且凭据已配置时 acquire，停止时 release */
     private val cloudNetwork: CloudNetworkManager? = null,
+    /** §2.7 震动（2026-09-23 用户决定）：仅 LLM 低置信（NEEDS_CONFIRMATION）触发 */
+    private val alerter: ConfirmationAlerter? = null,
 ) {
 
     private val _state = MutableStateFlow(SubtitleState())
@@ -286,6 +289,9 @@ class TranslationPipeline(
         }
         if (settings.cacheEnabled.first()) {
             runCatching { cache.mergeLanguageResult(result.toLanguageResultRecord(wallMs())) }
+        }
+        if (result.status == OutputStatus.NEEDS_CONFIRMATION) {
+            alerter?.onNeedsConfirmation()   // 限频/勿扰门禁内置于 alerter
         }
         if (result.status == OutputStatus.READY && result.text != null &&
             result.language in settings.spokenLanguages.first() && settings.ttsEnabled.first()

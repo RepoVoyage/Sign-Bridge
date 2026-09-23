@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.repovoyage.sign.R
 import com.repovoyage.sign.camera.SessionState
+import com.repovoyage.sign.camera.sessionStateText
 import com.repovoyage.sign.language.OutputStatus
 import com.repovoyage.sign.pipeline.PipelinePhase
 import com.repovoyage.sign.pipeline.SubtitleLine
@@ -156,21 +157,6 @@ fun MainScreen(
     }
 }
 
-@Composable
-private fun sessionStateText(state: SessionState): String = when (state) {
-    SessionState.Idle -> "未启动"
-    SessionState.Checking -> "检查中"
-    is SessionState.BleConnecting -> "蓝牙连接中 ${state.deviceName ?: ""}"
-    SessionState.WifiConnecting -> "Wi-Fi 连接中"
-    is SessionState.Authorizing -> "相机授权中（${state.status}）"
-    SessionState.Activating -> "激活中"
-    SessionState.Preparing -> "准备取流"
-    is SessionState.Streaming -> "取流中 ${state.params.width}x${state.params.height}@${state.params.fps}"
-    is SessionState.Reconnecting -> "重连中（第 ${state.attempt} 次）"
-    SessionState.Stopping -> "停止中"
-    SessionState.PausedHot -> "过热暂停"
-    is SessionState.Error -> "错误（${state.reason}）"
-}
 
 @Composable
 private fun SubtitleArea(

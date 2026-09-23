@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.ConnectivityManager
 import android.util.Log
 import com.arashivision.sdk.camera.InstaCameraSDK
+import com.repovoyage.sign.alert.ConfirmationAlerter
 import com.repovoyage.sign.language.DEFAULT_LLM_CLIENT
 import com.repovoyage.sign.net.CloudNetworkManager
 import com.repovoyage.sign.net.ConnectivityManagerCloudNetworkProvider
@@ -35,6 +36,9 @@ class SignApp : Application() {
     val ttsSpeaker: AndroidTtsSpeaker by lazy { AndroidTtsSpeaker(this) }
     val ttsManager: TtsManager by lazy { TtsManagerImpl(ttsSpeaker, appScope) }
 
+    /** §2.7 震动（用户决定 2026-09-23）：仅 LLM 低置信结果触发 */
+    val confirmationAlerter: ConfirmationAlerter by lazy { ConfirmationAlerter.create(this) }
+
     /** §2.4.7：相机会话中云端 LLM 走单独请求的蜂窝网络，不改绑整进程 */
     val cloudNetwork: CloudNetworkManager by lazy {
         CloudNetworkManager(
@@ -63,6 +67,7 @@ class SignApp : Application() {
             cache = sentenceCache,
             scope = appScope,
             cloudNetwork = cloudNetwork,
+            alerter = confirmationAlerter,
         )
     }
 

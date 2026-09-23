@@ -5,6 +5,7 @@ import com.repovoyage.sign.history.LanguageResultRecord
 import com.repovoyage.sign.history.SentenceCache
 import com.repovoyage.sign.history.SentenceRecord
 import com.repovoyage.sign.history.SentenceWithResults
+import com.repovoyage.sign.alert.ConfirmationAlerter
 import com.repovoyage.sign.language.LanguageProcessor
 import com.repovoyage.sign.language.LanguageResult
 import com.repovoyage.sign.language.OutputPreferences
@@ -189,6 +190,9 @@ class TranslationPipelineTest {
         assertEquals(OutputStatus.READY, result?.status)
         assertEquals("整理后：我需要帮助", result?.text)
 
+        // 缓存/TTS 副作用在字幕状态之后异步落地（DataStore 挂起读），等齐再断言
+        waitUntil { cache.upserts.isNotEmpty() && cache.merges.isNotEmpty() && tts.enqueued.isNotEmpty() }
+
         // pts 账本：start=首个 tokenSpan 起点，end=boundary cutoff
         val record = cache.upserts.single()
         assertEquals(1_000_000L, record.startPtsUs)
@@ -226,6 +230,40 @@ class TranslationPipelineTest {
         val result = pipeline.state.value.lines.single().results[LangCode("zh-CN")]
         assertEquals(OutputStatus.UNAVAILABLE, result?.status)
         assertTrue(tts.enqueued.isEmpty())
+        scope.cancel()
+    }
+
+    @Test
+    fun `仅 NEEDS_CONFIRMATION 触发震动`() = runBlocking {
+        var vibrations = 0
+        val alerter = ConfirmationAlerter(nowMs = { 0 }, canVibrate = { true }, vibrate = { vibrations++ })
+        fun pipelineWithAlerter() = TranslationPipeline(
+            source = source, settings = settings, processor = processor, tts = tts, cache = cache,
+            scope = scope, wallMs = { 1_000 }, finalizeDelayMs = 50, alerter = alerter,
+        )
+
+        // 低置信 → 震动一次
+        processor.status = OutputStatus.NEEDS_CONFIRMATION
+        val pipeline = pipelineWithAlerter()
+        pipeline.start("s-test")
+        source.emit(update("可能有歧义", BoundaryReliability.RELIABLE))
+        waitUntil { vibrations == 1 }
+        pipeline.stop()
+
+        // READY 不震动（新会话新段，播报照常入队）
+        processor.status = OutputStatus.READY
+        pipelineWithAlerter().start("s-test2")
+        source.emit(
+            RecognitionUpdate(
+                sequenceEpoch = 1, segmentId = "seg-2", draftText = "正常句子",
+                tokenSpans = listOf(TokenSpan("正常句子", 1_000_000, 3_000_000, true)),
+                confidence = 0.9f,
+                boundary = BoundarySignal(3_500_000, 500_000, BoundaryReliability.RELIABLE, BoundarySource.MODEL),
+            ),
+        )
+        waitUntil { tts.enqueued.isNotEmpty() }
+        delay(50)
+        assertEquals(1, vibrations)   // READY 路径没有新增震动
         scope.cancel()
     }
 

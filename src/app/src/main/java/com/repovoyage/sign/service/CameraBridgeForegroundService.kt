@@ -13,6 +13,7 @@ import androidx.core.app.ServiceCompat
 import com.repovoyage.sign.R
 import com.repovoyage.sign.camera.CameraSession
 import com.repovoyage.sign.camera.SdkCameraSession
+import com.repovoyage.sign.camera.sessionStateText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,18 +22,25 @@ import kotlinx.coroutines.launch
 
 /**
  * 相机连接/取流前台服务（Manifest 已声明 connectedDevice 类型）。
- * 持有唯一的 [SdkCameraSession]，UI 通过 [session] 访问；通知为 P2 占位样式，
- * 正式文案/样式在 P7 通知策略落地。
+ * 持有唯一的 [SdkCameraSession]，UI 通过 [session] 访问；通知文本跟随
+ * 会话状态实时刷新（P7 通知策略，§2.7：状态可见，不打扰）。
  */
 class CameraBridgeForegroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
         startInForeground()
         session = SdkCameraSession(applicationContext, scope)
+        // 通知跟随会话状态（连接中/取流中/重连中…），锁屏与下拉栏可见
+        scope.launch {
+            session?.state?.collect { state ->
+                notificationManager.notify(NOTIFICATION_ID, buildNotification(sessionStateText(state)))
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -63,17 +71,19 @@ class CameraBridgeForegroundService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun startInForeground() {
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun buildNotification(contentText: String): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.camera_service_notification_title))
-            .setContentText(getString(R.string.camera_service_notification_text))
+            .setContentText(contentText)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .build()
+
+    private fun startInForeground() {
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            notification,
+            buildNotification(getString(R.string.camera_service_notification_text)),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
     }
