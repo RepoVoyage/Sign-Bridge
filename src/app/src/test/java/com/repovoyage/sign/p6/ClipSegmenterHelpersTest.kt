@@ -1,14 +1,17 @@
 package com.repovoyage.sign.p6
 
-import com.repovoyage.sign.video.annexBVclSample
+import com.repovoyage.sign.video.annexBToRawNal
 import com.repovoyage.sign.video.extractParameterSets
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * 切片器纯函数验收（MediaMuxer 交互留真机联调）：Annex-B 样本保留
- * 与 CSD 提取——MP4 段可解码性的前提。
+ * 切片器纯函数验收（MediaMuxer 交互留真机联调）：Annex-B → 裸 VCL NAL 提取
+ * 与 CSD 提取——MP4 段可解码性的前提。样本必须是**无前缀裸 NAL**：MIUI
+ * MPEG4Writer 自行加 4 字节长度前缀（真机验尸：喂 AVCC 双重前缀 → 服务器
+ * 解出 0 帧）。
  */
 class ClipSegmenterHelpersTest {
 
@@ -18,29 +21,34 @@ class ClipSegmenterHelpersTest {
     private val sc3 = nal(0, 0, 1)
 
     @Test
-    fun `MediaMuxer 样本只保留 VCL NAL 并使用 Annex-B 起始码`() {
-        // SPS(67) + PPS(68) + IDR(65 AA BB) + 非 IDR slice(41 CC)，3/4 字节起始码混用
+    fun `裸 NAL 提取——剔除参数集并去掉起始码`() {
         val data = sc4 + nal(0x67, 0x42, 0x00, 0x1E) +
             sc3 + nal(0x68, 0xCE, 0x38, 0x80) +
-            sc4 + nal(0x65, 0xAA, 0xBB) +
-            sc3 + nal(0x41, 0xCC)
-        val sample = annexBVclSample(data)!!
-        val expected = sc4 + nal(0x65, 0xAA, 0xBB) + sc4 + nal(0x41, 0xCC)
-        assertArrayEquals(expected, sample)
+            sc4 + nal(0x65, 0xAA, 0xBB)
+        assertArrayEquals(nal(0x65, 0xAA, 0xBB), annexBToRawNal(data))
     }
 
     @Test
-    fun `样本裁掉 4 字节起始码归入前一 NAL 尾部的前导零`() {
-        // IDR 载荷以非零结尾，后随 4 字节起始码的 slice：IDR 长度不得含前导 00
-        val data = sc4 + nal(0x65, 0x11, 0x22) + sc4 + nal(0x41, 0x33)
-        val sample = annexBVclSample(data)!!
-        assertArrayEquals(sc4 + nal(0x65, 0x11, 0x22) + sc4 + nal(0x41, 0x33), sample)
+    fun `裸 NAL 提取——4 字节起始码的前导零不得混入载荷`() {
+        // 后随 4 字节起始码时，前一 NAL 的 end 含其首个 00，须裁掉
+        val data = sc4 + nal(0x65, 0x11, 0x22) + sc4 + nal(0x68, 0xCE)
+        // 两个 VCL？否：65 是 VCL，68 是 PPS → 单 VCL
+        assertArrayEquals(nal(0x65, 0x11, 0x22), annexBToRawNal(data))
     }
 
     @Test
-    fun `纯参数集帧无 VCL——样本返回 null`() {
+    fun `多 slice AU 不支持——返回 null（调用方整段作废）`() {
+        val data = sc4 + nal(0x65, 0xAA) + sc3 + nal(0x41, 0xCC)
+        assertNull(annexBToRawNal(data))
+        // 三个 VCL 同样拒绝（不得因置 null 后被第三个误置回）
+        val three = sc4 + nal(0x41, 0x01) + sc3 + nal(0x41, 0x02) + sc3 + nal(0x41, 0x03)
+        assertNull(annexBToRawNal(three))
+    }
+
+    @Test
+    fun `无 VCL 帧返回 null`() {
         val data = sc4 + nal(0x67, 0x42) + sc3 + nal(0x68, 0xCE)
-        assertNull(annexBVclSample(data))
+        assertNull(annexBToRawNal(data))
     }
 
     @Test
@@ -55,5 +63,13 @@ class ClipSegmenterHelpersTest {
     fun `CSD 不齐返回 null`() {
         val data = sc4 + nal(0x67, 0x42) + sc3 + nal(0x65, 0xAA)
         assertNull(extractParameterSets(data))
+    }
+
+    @Test
+    fun `裸 NAL 提取——载荷内部零字节不受裁剪影响`() {
+        val data = sc4 + nal(0x41, 0x00, 0x00, 0x03, 0x00, 0x55)
+        val result = annexBToRawNal(data)!!
+        assertEquals(6, result.size)
+        assertEquals(0x41, result[0].toInt())
     }
 }

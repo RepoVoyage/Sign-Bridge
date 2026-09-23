@@ -6,7 +6,6 @@ import android.media.MediaMuxer
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
-import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -115,7 +114,14 @@ class ClipSegmenter(
                     generation = frame.streamGeneration
                     corrupted = false
                 }
-                val sample = annexBToAvcc(frame.data) ?: continue
+                // 裸 NAL（无前缀）：本机 MIUI MPEG4Writer 会给样本自行加 4 字节
+                // 长度前缀（实测 range_length→bytesWritten 恒 +4；喂 AVCC 会双重
+                // 前缀 → 解码器整段报废，服务器解出 0 帧）。null = 多 slice AU
+                // 等不支持形态 → 整段作废，不产出半坏文件
+                val sample = annexBToRawNal(frame.data) ?: run {
+                    corrupted = true
+                    continue
+                }
                 val info = MediaCodec.BufferInfo().apply {
                     presentationTimeUs = frame.ptsUs - startPts
                     size = sample.size
@@ -148,26 +154,29 @@ class ClipSegmenter(
 }
 
 /**
- * Annex-B → AVCC（MP4 样本格式）：仅保留 VCL NAL（type 1/5），SPS/PPS/SEI
- * 走 format CSD 不进样本；4 字节起始码的多余前导 0 归上一 NAL 尾部，按
- * [H264DecodePrep] 同款规则裁掉。无 VCL 返回 null。
+ * Annex-B → 裸 VCL NAL（无任何前缀；writeSampleData 的样本格式，见调用处
+ * MIUI writer 行为注记）：仅保留 VCL NAL（type 1/5），SPS/PPS/SEI 走 format
+ * CSD 不进样本；4 字节起始码的多余前导 0 归上一 NAL 尾部，按
+ * [H264DecodePrep] 同款规则裁掉。
+ *
+ * **要求 AU 恰好一个 VCL NAL**（GO 3S 流实测单 slice）：0 个或 ≥2 个返回
+ * null——多 slice 裸拼接在长度前缀语义下不可解析，调用方整段作废。
  */
-internal fun annexBToAvcc(data: ByteArray): ByteArray? {
-    val out = ByteArrayOutputStream()
+internal fun annexBToRawNal(data: ByteArray): ByteArray? {
+    var found: ByteArray? = null
+    var vclCount = 0
     forEachAnnexBNal(data) { start, end ->
         val type = data[start].toInt() and 0x1F
         if (type == NAL_TYPE_SLICE || type == NAL_TYPE_IDR) {
-            var e = end
-            while (e > start && data[e - 1] == 0.toByte()) e--
-            val len = e - start
-            out.write(len ushr 24 and 0xFF)
-            out.write(len ushr 16 and 0xFF)
-            out.write(len ushr 8 and 0xFF)
-            out.write(len and 0xFF)
-            out.write(data, start, len)
+            vclCount++
+            if (vclCount == 1) {
+                var e = end
+                while (e > start && data[e - 1] == 0.toByte()) e--
+                found = data.copyOfRange(start, e)
+            }
         }
     }
-    return if (out.size() == 0) null else out.toByteArray()
+    return if (vclCount == 1) found else null
 }
 
 /** 从帧数据提取 SPS/PPS（各含 4 字节起始码，MediaFormat csd-0/csd-1）；不齐返回 null */
