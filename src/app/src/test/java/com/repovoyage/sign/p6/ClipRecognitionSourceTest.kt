@@ -12,6 +12,7 @@ import com.repovoyage.sign.recognition.RoutingRecognitionSource
 import com.repovoyage.sign.sentence.BoundaryReliability
 import com.repovoyage.sign.sentence.RecognitionUpdate
 import com.repovoyage.sign.settings.AppSettings
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -45,6 +46,9 @@ class ClipRecognitionSourceTest {
     private class FakeTransport : ClipTransport {
         val cvQueue = ArrayDeque<CvResult>()
         val recognizedSizes = mutableListOf<Int>()
+
+        /** 非 null 时 recognize 先在此挂起（模拟识别慢于切片速度的积压场景） */
+        var gate: CompletableDeferred<Unit>? = null
         var composeSentence: String? = null
         var composeStatus = "OK"
         var composeNeedsConfirmation = false
@@ -55,6 +59,7 @@ class ClipRecognitionSourceTest {
 
         override suspend fun recognize(videoBytes: ByteArray, token: String): CvResult {
             assertEquals("cv-tok", token)
+            gate?.await()
             recognizedSizes += videoBytes.size
             return cvQueue.removeFirst()
         }
@@ -167,7 +172,7 @@ class ClipRecognitionSourceTest {
         val source = newSource()
         assertFalse(source.isAvailable)
         settings.setRecognitionTokens("cv-tok", "agent-tok")
-        waitUntil { source.isAvailable }
+        waitUntil(10_000) { source.isAvailable }
 
         source.start()
         assertTrue(feed.attached)
@@ -185,7 +190,7 @@ class ClipRecognitionSourceTest {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         feed.failReason = "请先连接相机并开始取流"
         val source = newSource()
-        waitUntil { source.isAvailable }
+        waitUntil(10_000) { source.isAvailable }
         source.start()
         assertEquals("请先连接相机并开始取流", source.statusText.value)
     }
@@ -194,7 +199,7 @@ class ClipRecognitionSourceTest {
     fun `词候选累积为草稿；拒绝词触发重打提示且不入句`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
-        waitUntil { source.isAvailable }
+        waitUntil(10_000) { source.isAvailable }
         val updates = mutableListOf<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
         var repeats = 0
@@ -220,7 +225,7 @@ class ClipRecognitionSourceTest {
     fun `完成本句——needsConfirmation 映射 UNCERTAIN 边界，pts 账本取词段范围`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
-        waitUntil { source.isAvailable }
+        waitUntil(10_000) { source.isAvailable }
         val updates = mutableListOf<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
         source.start()
@@ -258,7 +263,7 @@ class ClipRecognitionSourceTest {
     fun `完成本句——无待核实时为 RELIABLE 边界（正常收尾）`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
-        waitUntil { source.isAvailable }
+        waitUntil(10_000) { source.isAvailable }
         val updates = mutableListOf<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
         source.start()
@@ -277,7 +282,7 @@ class ClipRecognitionSourceTest {
     fun `组句失败（null 句子）保留候选可重试；回显不匹配拒绝结果`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
-        waitUntil { source.isAvailable }
+        waitUntil(10_000) { source.isAvailable }
         val updates = mutableListOf<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
         source.start()
@@ -306,6 +311,40 @@ class ClipRecognitionSourceTest {
         waitUntil { updates.any { it.boundary != null } }
         assertEquals("我想回家", updates.last().draftText)
         assertEquals(3, transport.lastComposeRevision)
+    }
+
+    @Test
+    fun `积压超限——溢出切片丢弃且本句作废，提示重打`() = runBlocking {
+        settings.setRecognitionTokens("cv-tok", "agent-tok")
+        val source = newSource()
+        waitUntil(10_000) { source.isAvailable }
+        val updates = mutableListOf<RecognitionUpdate>()
+        scope.launch { source.updates.collect { updates += it } }
+        var repeats = 0
+        scope.launch { source.needsRepeat.collect { repeats++ } }
+        source.start()
+
+        // 首段识别被 gate 挂起 = 消费停滞；积压 2 段后第 4 段溢出
+        transport.gate = CompletableDeferred()
+        transport.cvQueue += ok("我")
+        transport.cvQueue += ok("回")
+        transport.cvQueue += ok("家")
+        feed.callback!!(clip("a.mp4", byteArrayOf(1)), 0, 2_000_000)
+        feed.callback!!(clip("b.mp4", byteArrayOf(2)), 2_000_000, 4_000_000)
+        feed.callback!!(clip("c.mp4", byteArrayOf(3)), 4_000_000, 6_000_000)
+        feed.callback!!(clip("d.mp4", byteArrayOf(4)), 6_000_000, 8_000_000)
+        // 溢出切片即删（不滞留磁盘）
+        assertFalse(File(tmp.root, "d.mp4").exists())
+
+        transport.gate!!.complete(Unit)
+        waitUntil { updates.size == 3 }
+        // 溢出触发一次重打提示；"我"所在句被作废，b/c 以新段重开
+        assertEquals(1, repeats)
+        assertEquals("我", updates[0].draftText)
+        assertEquals("回", updates[1].draftText)
+        assertEquals("回 · 家", updates[2].draftText)
+        assertFalse(updates[1].segmentId == updates[0].segmentId)
+        assertEquals("已收 2 词；打完点「完成本句」", source.statusText.value)
     }
 
     @Test

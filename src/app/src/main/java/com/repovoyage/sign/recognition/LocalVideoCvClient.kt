@@ -1,6 +1,7 @@
 package com.repovoyage.sign.recognition
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -16,16 +17,38 @@ import java.util.concurrent.TimeUnit
  * 最多三个候选 + 状态。
  *
  * [clientProvider] 注入 §2.4.7 蜂窝绑定客户端（相机在线时进程默认网络无公网）；
- * 未就绪时回落进程默认网络。改造自 codex/app-local-video-test 分支
+ * 未就绪时回落进程默认网络。429（服务端限流，真机联调实测会触发）按
+ * Retry-After/线性退避重试。改造自 codex/app-local-video-test 分支
  * （原 Uri 文件读取入口随其手动测试界面留在该分支）。
  */
 class LocalVideoCvClient(private val clientProvider: () -> OkHttpClient = { OkHttpClient() }) {
 
-    suspend fun recognizeBytes(bytes: ByteArray, token: String): CvResult =
+    private sealed interface Attempt {
+        data class Success(val result: CvResult) : Attempt
+        data class RateLimited(val retryAfterMs: Long?) : Attempt
+    }
+
+    suspend fun recognizeBytes(bytes: ByteArray, token: String): CvResult {
+        require(token.isNotBlank()) { "请填写 CV 服务令牌" }
+        if (bytes.isEmpty()) throw IOException("视频片段为空")
+        if (bytes.size > MAX_BYTES) throw IOException("视频超过 32 MiB")
+        var attempt = 0
+        while (true) {
+            when (val outcome = attemptOnce(bytes, token)) {
+                is Attempt.Success -> return outcome.result
+                is Attempt.RateLimited -> {
+                    if (attempt >= RATE_LIMIT_RETRIES) {
+                        throw IOException("CV HTTP 429：服务端限流，退避重试 $attempt 次后仍被拒")
+                    }
+                    attempt++
+                    delay(minOf(outcome.retryAfterMs ?: RATE_LIMIT_BACKOFF_MS * attempt, RATE_LIMIT_MAX_BACKOFF_MS))
+                }
+            }
+        }
+    }
+
+    private suspend fun attemptOnce(bytes: ByteArray, token: String): Attempt =
         withContext(Dispatchers.IO) {
-            require(token.isNotBlank()) { "请填写 CV 服务令牌" }
-            if (bytes.isEmpty()) throw IOException("视频片段为空")
-            if (bytes.size > MAX_BYTES) throw IOException("视频超过 32 MiB")
             val request = Request.Builder()
                 .url(RECOGNIZE_URL)
                 .header("Authorization", "Bearer ${token.trim()}")
@@ -38,18 +61,27 @@ class LocalVideoCvClient(private val clientProvider: () -> OkHttpClient = { OkHt
                 .callTimeout(90, TimeUnit.SECONDS)
                 .build()
                 .newCall(request).execute().use { response ->
+                    if (response.code == 429) {
+                        // Retry-After 秒数（服务端未文档化该头，防御性解析）
+                        return@use Attempt.RateLimited(
+                            response.header("Retry-After")?.toLongOrNull()?.times(1000),
+                        )
+                    }
                     val body = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
                         val error = runCatching { JSONObject(body).optString("error") }.getOrNull()
                         throw IOException("CV HTTP ${response.code}${error?.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
                     }
-                    parseCvResponse(body)
+                    Attempt.Success(parseCvResponse(body))
                 }
         }
 
     private companion object {
         const val RECOGNIZE_URL = "https://101.37.234.129/v1/recognize"
         const val MAX_BYTES = 32L * 1024 * 1024
+        const val RATE_LIMIT_RETRIES = 2
+        const val RATE_LIMIT_BACKOFF_MS = 1_500L
+        const val RATE_LIMIT_MAX_BACKOFF_MS = 8_000L
     }
 }
 

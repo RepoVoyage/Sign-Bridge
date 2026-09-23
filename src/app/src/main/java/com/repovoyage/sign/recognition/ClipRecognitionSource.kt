@@ -9,6 +9,8 @@ import com.repovoyage.sign.settings.AppSettings
 import com.repovoyage.sign.settings.RecognitionTokens
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -93,6 +95,18 @@ class ClipRecognitionSource(
 
     @Volatile private var running = false
 
+    /**
+     * 待识别切片积压队列（有界）：识别速度跟不上切片速度（如服务端限流/
+     * 推理慢于窗口）时不允许无限排队——溢出的切片丢弃且**本句作废**
+     * （中间缺词的句子不可信），提示重打并建议加大窗口。
+     */
+    private data class PendingClip(val file: File, val startPtsUs: Long, val endPtsUs: Long)
+
+    private var clipQueue: Channel<PendingClip>? = null
+    private var consumerJob: Job? = null
+
+    @Volatile private var sentenceBroken = false
+
     init {
         scope.launch {
             settings.recognitionTokens.collect { tokens = it }
@@ -110,23 +124,62 @@ class ClipRecognitionSource(
         composeRevision = 0
         currentSegmentId = null
         gestures.clear()
+        sentenceBroken = false
         sessionId = UUID.randomUUID().toString()
         outputDir.mkdirs()
         outputDir.listFiles()?.forEach { it.delete() }
         // §2.4.7：相机在线时进程默认网络无公网，切片上传必须走蜂窝；
         // 释放归管线 stop()（与 LLM 共用同一持有者，幂等）
         acquireCellular()
+        val queue = Channel<PendingClip>(CLIP_BACKLOG_CAPACITY)
+        clipQueue = queue
+        consumerJob = scope.launch {
+            for (clip in queue) {
+                if (sentenceBroken) {
+                    sentenceBroken = false
+                    invalidateSentenceLocked("识别跟不上切片速度：本句已丢弃，请重打（可加大切片窗口）")
+                }
+                onClip(clip.file, clip.startPtsUs, clip.endPtsUs)
+            }
+        }
         _statusText.value = feed.attach(outputDir, windowUs, scope) { file, startPtsUs, endPtsUs ->
-            scope.launch { onClip(file, startPtsUs, endPtsUs) }
+            val q = clipQueue
+            if (q == null || q.trySend(PendingClip(file, startPtsUs, endPtsUs)).isFailure) {
+                file.delete()
+                sentenceBroken = true
+            }
         }
     }
 
     override fun stop() {
         running = false
         feed.detach()
+        consumerJob?.cancel()
+        consumerJob = null
+        // 清空积压切片文件（隐私：帧数据不滞留磁盘）
+        val q = clipQueue
+        clipQueue = null
+        if (q != null) {
+            q.close()
+            while (true) {
+                val clip = q.tryReceive().getOrNull() ?: break
+                clip.file.delete()
+            }
+        }
         gestures.clear()
         currentSegmentId = null
+        sentenceBroken = false
         _statusText.value = null
+    }
+
+    /** 本句作废：清空已收候选并触发重打提示（调用方持锁或在消费者协程内） */
+    private suspend fun invalidateSentenceLocked(message: String) {
+        lock.withLock {
+            gestures.clear()
+            currentSegmentId = null
+        }
+        _statusText.value = message
+        _needsRepeat.emit(Unit)
     }
 
     /** 用户「完成本句」：已收集候选送 Agent 组句，结果作为一个段更新进管线 */
@@ -230,6 +283,9 @@ class ClipRecognitionSource(
     companion object {
         /** 切片窗口默认值（秒）；用户可在设置中定义，start 时读取 */
         const val DEFAULT_WINDOW_SECONDS = 2.0
+
+        /** 待识别积压上限（另有一段在识别中）；溢出即丢句重打，不无限排队 */
+        const val CLIP_BACKLOG_CAPACITY = 2
     }
 }
 
