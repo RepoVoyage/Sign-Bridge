@@ -1,5 +1,8 @@
 package com.repovoyage.sign.history
 
+import androidx.room.Entity
+import androidx.room.ForeignKey
+import androidx.room.Index
 import com.repovoyage.sign.language.LanguageResult
 import com.repovoyage.sign.sentence.ConfirmedSentence
 import com.repovoyage.sign.sentence.LangCode
@@ -13,6 +16,7 @@ import kotlinx.coroutines.flow.Flow
  */
 
 /** 历史句子记录（复合主键 sessionId + segmentId） */
+@Entity(tableName = "sentences", primaryKeys = ["sessionId", "segmentId"])
 data class SentenceRecord(
     val sessionId: String,
     val segmentId: String,
@@ -30,7 +34,18 @@ data class SentenceRecord(
     val specChecksum: String,
 )
 
-/** 语言结果记录（复合主键 sessionId + segmentId + language） */
+/** 语言结果记录（复合主键 sessionId + segmentId + language）；随句子级联删除 */
+@Entity(
+    tableName = "language_results",
+    primaryKeys = ["sessionId", "segmentId", "language"],
+    foreignKeys = [ForeignKey(
+        entity = SentenceRecord::class,
+        parentColumns = ["sessionId", "segmentId"],
+        childColumns = ["sessionId", "segmentId"],
+        onDelete = ForeignKey.CASCADE,
+    )],
+    indices = [Index("sessionId", "segmentId")],
+)
 data class LanguageResultRecord(
     val sessionId: String,
     val segmentId: String,
