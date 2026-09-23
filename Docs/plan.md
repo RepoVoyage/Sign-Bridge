@@ -225,6 +225,25 @@ FK 级联/schema 导出）、`RoomSentenceCache`（合并=主键 upsert、历史
 待做：字幕/设置 UI（Compose 基建未引入）、管线接线（识别源缺失随 P5/P6；
 缓存写入的开关门控随管线）、UI 阶段处理首次告知展示与 LLM 凭据设置。
 
+**进度（2026-09-23 深夜）**：Compose UI 三屏 + 翻译管线编排落地。MainActivity
+迁 ComponentActivity + Compose（主界面/设置/历史三屏导航，P2 面板逻辑迁入
+MainViewModel）；`TranslationPipeline` 接线 识别源→SentenceManager→
+LanguageProcessor→字幕/缓存/TTS（Finalizing 2s 收尾、每句设置快照、revision
+变更清待播、语音开关立即停、缓存开关门控写入）；`RecognitionSource` flavor 缝
+（training 桩源 9 句脚本——含否定/数字保真样本；production 不可用，按 §6 只显
+状态不伪造结果）；**识别模型选择**（用户新增需求：两个 P5 训练模型，
+ModelCatalog 占位命名待 P6 回填，选择持久化于 AppSettings，推理接入后生效）；
+AppSettings 扩充（字幕/语音语言·顺序=优先级·语音⊆字幕、播报开关、LLM 凭据、
+settingsRevision）；TtsManager.clearPendingKeepCurrent + AndroidTtsSpeaker
+（离线 Voice 就绪判定）。基建：Compose BOM 2026.06.01（ui 1.11.x 为
+compileSdk 35 末代，1.12+ 需 36——升级须先过 §3.2 AAR 实测决策）+
+activity-compose 1.10.1 + lifecycle 2.10.0；release lintVital 因 AGP 8.7.3
+lint 与 Kotlin 2.3.20 工具链崩溃针对性关闭（注释在案，P8 人工评审补偿）。
+验收：JVM 196 条全绿（+7 管线 +9 设置 +1 TTS）、两 flavor debug +
+productionRelease 构建通过、training debug 已装机（手动验收进行中）。
+待做：§2.4.7 蜂窝并发（相机会话中云端 LLM，测试机有 SIM 可完整验证）、
+UI 手动验收收尾、P6 识别接入。
+
 ### P8 验收（持续，按 ARCHITECTURE.md §8 全表）
 
 每阶段结束跑对应行；发布前全表过一遍 + 持续 30 分钟压力 + 训练隔离检查（productionRelease 无采集入口/端口/落盘）。
