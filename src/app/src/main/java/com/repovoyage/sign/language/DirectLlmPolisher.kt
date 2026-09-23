@@ -4,12 +4,20 @@ import android.os.SystemClock
 import com.repovoyage.sign.sentence.LangCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.SocketTimeoutException
-import java.net.URL
+import java.io.InterruptedIOException
+import java.util.concurrent.TimeUnit
+
+/** 进程级共享默认客户端（进程默认网络；无相机会话时使用，§2.4.7） */
+val DEFAULT_LLM_CLIENT: OkHttpClient = OkHttpClient()
+
+private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
 /**
  * P7 直连云端 LLM 的 LlmPolisher（agent/app/service.py 的 Kotlin 移植）：
@@ -17,18 +25,23 @@ import java.net.URL
  * 不经中间服务。错误经 [CloudPolishException] 映射（code/retryable 与
  * agent 契约一致）。
  *
- * 凭据 [apiKey] 由装配层注入（开发期 local.properties → BuildConfig，
- * 不入库）；发布包内置密钥可被提取——API.md §6.3 凭据不写入发布包，
- * 发布形态（已部署 agent / 运行时下发）待定。密钥不写日志。
+ * 凭据（[baseUrl]/[apiKey]/[model]）走 App 运行时设置（§6.3，AppSettings
+ * 自持、排除备份、发布包不内置密钥），由装配层每次调用注入。密钥不写日志。
  *
- * 期限：deadlineMonoMs 为手机单调时钟绝对时刻；connect/read 超时取剩余
- * 预算（上限 10s，§6.2 云端每句 10s）。
+ * 网络路径（§2.4.7）：[clientProvider] 决定走哪条网络——相机会话中注入
+ * 绑定蜂窝 Network 的客户端（CloudNetworkManager），无相机会话时回落
+ * [SHARED_CLIENT]（进程默认网络）。客户端按有效网络复用，预算超时经
+ * newBuilder 派生（共享连接池/调度器，不每句新建池）。
+ *
+ * 期限：deadlineMonoMs 为手机单调时钟绝对时刻；connect/read/call 超时取
+ * 剩余预算（上限 10s，§6.2 云端每句 10s）。
  */
 class DirectLlmPolisher(
     private val baseUrl: String,              // API 前缀（通常含 /v1），不含 /chat/completions
     private val apiKey: String,
     private val model: String,
     private val monoMs: () -> Long = SystemClock::elapsedRealtime,
+    private val clientProvider: () -> OkHttpClient = { DEFAULT_LLM_CLIENT },
 ) : LlmPolisher {
 
     override suspend fun polish(input: PolishInput, deadlineMonoMs: Long): PolishOutput =
@@ -43,31 +56,31 @@ class DirectLlmPolisher(
             )
         }
         val budgetMs = remaining.coerceAtMost(MAX_BUDGET_MS)
-        val url = URL(baseUrl.trimEnd('/') + "/chat/completions")
-        val conn = url.openConnection() as HttpURLConnection
+        val client = clientProvider().newBuilder()
+            .connectTimeout(budgetMs, TimeUnit.MILLISECONDS)
+            .readTimeout(budgetMs, TimeUnit.MILLISECONDS)
+            .callTimeout(budgetMs, TimeUnit.MILLISECONDS)
+            .build()
+        val request = Request.Builder()
+            .url(baseUrl.trimEnd('/') + "/chat/completions")
+            .header("Authorization", "Bearer $apiKey")
+            .post(encodeRequest(input).toRequestBody(JSON_MEDIA_TYPE))
+            .build()
         try {
-            conn.requestMethod = "POST"
-            conn.connectTimeout = budgetMs.coerceAtLeast(1).toInt()
-            conn.readTimeout = budgetMs.coerceAtLeast(1).toInt()
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            conn.setRequestProperty("Authorization", "Bearer $apiKey")
-            conn.outputStream.use { it.write(encodeRequest(input).toByteArray(Charsets.UTF_8)) }
-            val status = conn.responseCode
-            val body = (if (status in 200..299) conn.inputStream else conn.errorStream)
-                ?.use { runCatching { it.readBytes().toString(Charsets.UTF_8) }.getOrNull() }
-                ?: ""
-            if (status !in 200..299) throw mapUpstreamError(status)
-            val output = parseModelOutput(input, body)
-            return guardResult(input, output, monoMs() - startedAt)
-        } catch (e: SocketTimeoutException) {
+            client.newCall(request).execute().use { response ->
+                val status = response.code
+                val body = response.body?.string() ?: ""
+                if (status !in 200..299) throw mapUpstreamError(status)
+                val output = parseModelOutput(input, body)
+                return guardResult(input, output, monoMs() - startedAt)
+            }
+        } catch (e: InterruptedIOException) {
+            // 含 SocketTimeoutException 与 callTimeout 触发的中断
             throw CloudPolishException("MODEL_TIMEOUT", true, "期限内未完成，未返回语言标 UNAVAILABLE")
         } catch (e: IOException) {
             throw CloudPolishException(
                 CloudPolishException.MODEL_UNAVAILABLE, true, "无法连接模型服务：${e.message}",
             )
-        } finally {
-            conn.disconnect()
         }
     }
 

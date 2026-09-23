@@ -4,6 +4,7 @@ import com.repovoyage.sign.history.SentenceCache
 import com.repovoyage.sign.history.toLanguageResultRecord
 import com.repovoyage.sign.history.toSentenceRecord
 import com.repovoyage.sign.language.CloudPolishException
+import com.repovoyage.sign.language.DEFAULT_LLM_CLIENT
 import com.repovoyage.sign.language.DirectLlmPolisher
 import com.repovoyage.sign.language.LanguageProcessor
 import com.repovoyage.sign.language.LanguageResult
@@ -12,6 +13,7 @@ import com.repovoyage.sign.language.OutputSource
 import com.repovoyage.sign.language.OutputStatus
 import com.repovoyage.sign.language.PolishInput
 import com.repovoyage.sign.language.PolishOutput
+import com.repovoyage.sign.net.CloudNetworkManager
 import com.repovoyage.sign.recognition.RecognitionSource
 import com.repovoyage.sign.sentence.ConfirmReason
 import com.repovoyage.sign.sentence.ConfirmedSentence
@@ -33,6 +35,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 import java.util.UUID
 
 /** 管线阶段（§6 错误矩阵：模型未就绪 → 禁止开始连续翻译，保留状态界面） */
@@ -62,19 +65,21 @@ data class SubtitleState(
 
 /**
  * 运行时凭据引擎（§6.3：凭据走 App 运行时设置，自持、发布包不内置）：
- * 每次 polish 按当前凭据快照构建 DirectLlmPolisher（HTTP 连接本就每次新建）；
- * 未配置凭据抛 CloudPolishException → LanguageProcessor 映射全语言
- * UNAVAILABLE，不伪装译文。
+ * 每次 polish 按当前凭据快照构建 DirectLlmPolisher（HTTP 客户端由
+ * [clientProvider] 复用，见 §2.4.7）；未配置凭据抛 CloudPolishException →
+ * LanguageProcessor 映射全语言 UNAVAILABLE，不伪装译文。
  */
 class CredentialLlmPolisher(
     private val credentials: suspend () -> LlmCredentials,
+    private val clientProvider: () -> OkHttpClient = { DEFAULT_LLM_CLIENT },
 ) : LlmPolisher {
     override suspend fun polish(input: PolishInput, deadlineMonoMs: Long): PolishOutput {
         val c = credentials()
         if (!c.isConfigured) {
             throw CloudPolishException(CloudPolishException.MODEL_UNAVAILABLE, false, "LLM 凭据未配置")
         }
-        return DirectLlmPolisher(c.baseUrl, c.apiKey, c.model).polish(input, deadlineMonoMs)
+        return DirectLlmPolisher(c.baseUrl, c.apiKey, c.model, clientProvider = clientProvider)
+            .polish(input, deadlineMonoMs)
     }
 }
 
@@ -107,6 +112,8 @@ class TranslationPipeline(
     private val scope: CoroutineScope,
     private val wallMs: () -> Long = System::currentTimeMillis,
     private val finalizeDelayMs: Long = 2_000L,
+    /** §2.4.7 蜂窝网络：管线启动且凭据已配置时 acquire，停止时 release */
+    private val cloudNetwork: CloudNetworkManager? = null,
 ) {
 
     private val _state = MutableStateFlow(SubtitleState())
@@ -139,9 +146,16 @@ class TranslationPipeline(
                 }
             }
             launch {
+                // §2.4.7：启用云端（凭据已配置）即请求蜂窝网络，等回调不轮询
+                if (settings.llmCredentials.first().isConfigured) cloudNetwork?.acquire()
+            }
+            launch {
                 settings.preferences.collect { prefs ->
                     if (lastSettingsRevision >= 0 && prefs.revision != lastSettingsRevision) {
                         tts.clearPendingKeepCurrent()
+                        // 凭据中途配置/清除：跟随启停蜂窝请求（幂等）
+                        if (settings.llmCredentials.first().isConfigured) cloudNetwork?.acquire()
+                        else cloudNetwork?.release()
                     }
                     lastSettingsRevision = prefs.revision
                 }
@@ -164,6 +178,7 @@ class TranslationPipeline(
         source.stop()
         manager = null
         lastSettingsRevision = -1
+        cloudNetwork?.release()   // §2.4.7 第 6 条：结束会话注销蜂窝请求
         _state.value = SubtitleState(phase = PipelinePhase.IDLE)
     }
 

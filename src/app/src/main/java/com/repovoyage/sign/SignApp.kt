@@ -1,8 +1,12 @@
 package com.repovoyage.sign
 
 import android.app.Application
+import android.net.ConnectivityManager
 import android.util.Log
 import com.arashivision.sdk.camera.InstaCameraSDK
+import com.repovoyage.sign.language.DEFAULT_LLM_CLIENT
+import com.repovoyage.sign.net.CloudNetworkManager
+import com.repovoyage.sign.net.ConnectivityManagerCloudNetworkProvider
 import com.repovoyage.sign.history.RoomSentenceCache
 import com.repovoyage.sign.history.SentenceCache
 import com.repovoyage.sign.history.SentenceDatabase
@@ -30,10 +34,23 @@ class SignApp : Application() {
     val sentenceCache: SentenceCache by lazy { RoomSentenceCache(database.sentenceDao()) }
     val ttsSpeaker: AndroidTtsSpeaker by lazy { AndroidTtsSpeaker(this) }
     val ttsManager: TtsManager by lazy { TtsManagerImpl(ttsSpeaker, appScope) }
+
+    /** §2.4.7：相机会话中云端 LLM 走单独请求的蜂窝网络，不改绑整进程 */
+    val cloudNetwork: CloudNetworkManager by lazy {
+        CloudNetworkManager(
+            ConnectivityManagerCloudNetworkProvider(getSystemService(ConnectivityManager::class.java)),
+        )
+    }
+
     val languageProcessor: LanguageProcessor by lazy {
         LanguageProcessorImpl(
             // §6.3：凭据运行时读取，发布包不内置密钥
-            engine = CredentialLlmPolisher { settings.llmCredentials.first() },
+            engine = CredentialLlmPolisher(
+                credentials = { settings.llmCredentials.first() },
+                // 蜂窝绑定客户端优先；未就绪回落进程默认网络（无相机会话时可用，
+                // 相机会话中则失败降级 UNAVAILABLE——§2.4.7 第 5 条）
+                clientProvider = { cloudNetwork.clientOrNull() ?: DEFAULT_LLM_CLIENT },
+            ),
             scope = appScope,
         )
     }
@@ -45,6 +62,7 @@ class SignApp : Application() {
             tts = ttsManager,
             cache = sentenceCache,
             scope = appScope,
+            cloudNetwork = cloudNetwork,
         )
     }
 

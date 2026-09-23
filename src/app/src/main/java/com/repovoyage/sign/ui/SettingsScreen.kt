@@ -142,6 +142,11 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
 
             // ------------------------------------------------ LLM 凭据
             SettingsCard(stringResource(R.string.settings_llm_title), stringResource(R.string.settings_llm_hint)) {
+                Text(
+                    stringResource(R.string.settings_llm_cost_notice),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
                 OutlinedTextField(
                     value = urlDraft,
                     onValueChange = { vm.urlDraft.value = it },

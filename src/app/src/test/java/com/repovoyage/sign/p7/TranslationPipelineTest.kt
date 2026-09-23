@@ -10,6 +10,8 @@ import com.repovoyage.sign.language.LanguageResult
 import com.repovoyage.sign.language.OutputPreferences
 import com.repovoyage.sign.language.OutputSource
 import com.repovoyage.sign.language.OutputStatus
+import com.repovoyage.sign.net.CloudNetworkManager
+import com.repovoyage.sign.net.CloudNetworkProvider
 import com.repovoyage.sign.pipeline.PipelinePhase
 import com.repovoyage.sign.pipeline.TranslationPipeline
 import com.repovoyage.sign.recognition.RecognitionSource
@@ -21,6 +23,7 @@ import com.repovoyage.sign.sentence.LangCode
 import com.repovoyage.sign.sentence.RecognitionUpdate
 import com.repovoyage.sign.sentence.TokenSpan
 import com.repovoyage.sign.settings.AppSettings
+import com.repovoyage.sign.settings.LlmCredentials
 import com.repovoyage.sign.tts.EnqueueResult
 import com.repovoyage.sign.tts.SpeakRequest
 import com.repovoyage.sign.tts.TtsEvent
@@ -35,6 +38,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -253,6 +257,37 @@ class TranslationPipelineTest {
         settings.setSelectedLanguages(listOf(LangCode("zh-CN"), LangCode("en-US")))
         waitUntil { tts.clearPendingCount >= 1 }
         assertEquals(0, tts.stopCount)   // 不打断当前播报
+        scope.cancel()
+    }
+
+    private class FakeCloudNetworkProvider : CloudNetworkProvider {
+        var requestCount = 0
+        var unregisterCount = 0
+        override fun request(listener: CloudNetworkProvider.Listener) { requestCount++ }
+        override fun unregister(listener: CloudNetworkProvider.Listener) { unregisterCount++ }
+        override fun boundClient(handle: Any): OkHttpClient = OkHttpClient()
+    }
+
+    @Test
+    fun `凭据已配置时启动申请蜂窝且停止注销`() = runBlocking {
+        settings.setLlmCredentials(LlmCredentials("https://api.example.com/v1", "k", "m"))
+        val provider = FakeCloudNetworkProvider()
+        val cloudNetwork = CloudNetworkManager(provider)
+        val pipeline = TranslationPipeline(
+            source = source,
+            settings = settings,
+            processor = processor,
+            tts = tts,
+            cache = cache,
+            scope = scope,
+            wallMs = { 1_000 },
+            finalizeDelayMs = 50,
+            cloudNetwork = cloudNetwork,
+        )
+        pipeline.start("s-test")
+        waitUntil { provider.requestCount >= 1 }
+        pipeline.stop()
+        assertEquals(1, provider.unregisterCount)
         scope.cancel()
     }
 
