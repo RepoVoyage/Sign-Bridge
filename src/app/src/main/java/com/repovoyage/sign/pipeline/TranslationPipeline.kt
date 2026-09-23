@@ -45,7 +45,13 @@ enum class PipelinePhase { IDLE, RUNNING, SOURCE_UNAVAILABLE }
 /** 正在识别的草稿（界面显示"正在识别"，不当作选定语言译文——§2.4.3） */
 data class DraftLine(val segmentId: String, val revision: Int, val text: String)
 
-data class SubtitleResult(val text: String?, val status: OutputStatus, val source: OutputSource)
+data class SubtitleResult(
+    val text: String?,
+    val status: OutputStatus,
+    val source: OutputSource,
+    /** 用户已核对（含纠错）——展示层撤下"待核对"标记 */
+    val userConfirmed: Boolean = false,
+)
 
 data class PendingConfirmLine(val segmentId: String, val draftText: String, val reason: ConfirmReason)
 
@@ -130,6 +136,9 @@ class TranslationPipeline(
     /** 段 pts 账本：start=首个 tokenSpan 起点，end=最新 boundary cutoff */
     private val segmentPts = mutableMapOf<String, Pair<Long, Long>>()
 
+    /** 最近语言结果账本（纠错时取原记录整行覆盖）；随会话清空，容量兜底 */
+    private val recentResults = LinkedHashMap<Pair<String, LangCode>, LanguageResult>()
+
     fun start(sessionId: String = UUID.randomUUID().toString()) {
         if (!source.isAvailable) {
             _state.value = SubtitleState(phase = PipelinePhase.SOURCE_UNAVAILABLE)
@@ -140,6 +149,7 @@ class TranslationPipeline(
         val sm = SentenceManager(sessionId, streamGeneration = 0)
         manager = sm
         segmentPts.clear()
+        recentResults.clear()
         _state.value = SubtitleState(phase = PipelinePhase.RUNNING)
         runJob = scope.launch {
             launch {
@@ -189,6 +199,47 @@ class TranslationPipeline(
     fun discardPending(segmentId: String) {
         val sm = manager ?: return
         handle(sm.discard(segmentId), sm)
+    }
+
+    /**
+     * 用户核对 LLM 低置信结果（§2.7 疑义核对/纠错入口，2026-09-23 用户决定：
+     * 震动提示后由用户修改）：
+     * - 文本有改动 → 落库覆盖为 source=USER、status=READY（API.md §6.1）
+     * - 原样保存 → 视为人工确认：status=READY，source 保留模型来源
+     * - 展示层撤下"待核对"；不自动播报（§2.4.2 规则 12，需要声音由用户显式重播）
+     */
+    fun submitCorrection(segmentId: String, language: LangCode, text: String) {
+        val original = recentResults[segmentId to language] ?: return
+        val edited = text != (original.text ?: "")
+        val confirmed = original.copy(
+            text = text,
+            status = OutputStatus.READY,
+            source = if (edited) OutputSource.USER else original.source,
+        )
+        recentResults[segmentId to language] = confirmed
+        _state.update { st ->
+            st.copy(
+                lines = st.lines.map {
+                    if (it.segmentId == segmentId) {
+                        it.copy(
+                            results = it.results + (language to SubtitleResult(
+                                text = text,
+                                status = OutputStatus.READY,
+                                source = confirmed.source,
+                                userConfirmed = true,
+                            )),
+                        )
+                    } else {
+                        it
+                    }
+                },
+            )
+        }
+        scope.launch {
+            if (settings.cacheEnabled.first()) {
+                runCatching { cache.mergeLanguageResult(confirmed.toLanguageResultRecord(wallMs())) }
+            }
+        }
     }
 
     /** 用户对"未播报"句显式重播（§2.5.2：不自动补读，重播是用户动作） */
@@ -276,6 +327,10 @@ class TranslationPipeline(
     }
 
     private suspend fun onResult(sentence: ConfirmedSentence, result: LanguageResult) {
+        recentResults[result.segmentId to result.language] = result
+        if (recentResults.size > MAX_TRACKED_RESULTS) {
+            recentResults.remove(recentResults.keys.first())
+        }
         _state.update { st ->
             st.copy(
                 lines = st.lines.map {
@@ -321,5 +376,6 @@ class TranslationPipeline(
 
     private companion object {
         const val MAX_LINES = 50
+        const val MAX_TRACKED_RESULTS = 200
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -16,6 +17,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -23,6 +25,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -151,6 +156,7 @@ fun MainScreen(
                 pendingConfirm = pipeline.pendingConfirm,
                 onDiscard = vm::discardPending,
                 onReplay = vm::replay,
+                onCorrect = vm::submitCorrection,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
         }
@@ -165,6 +171,7 @@ private fun SubtitleArea(
     pendingConfirm: List<com.repovoyage.sign.pipeline.PendingConfirmLine>,
     onDiscard: (String) -> Unit,
     onReplay: (String, LangCode) -> Unit,
+    onCorrect: (String, LangCode, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -225,13 +232,20 @@ private fun SubtitleArea(
             }
         }
         items(lines, key = { it.segmentId }) { line ->
-            SubtitleLineCard(line, onReplay)
+            SubtitleLineCard(line, onReplay, onCorrect)
         }
     }
 }
 
 @Composable
-private fun SubtitleLineCard(line: SubtitleLine, onReplay: (String, LangCode) -> Unit) {
+private fun SubtitleLineCard(
+    line: SubtitleLine,
+    onReplay: (String, LangCode) -> Unit,
+    onCorrect: (String, LangCode, String) -> Unit,
+) {
+    // 当前打开核对对话框的语言与编辑中的文本
+    var correcting by remember(line.segmentId) { mutableStateOf<Pair<LangCode, String>?>(null) }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(line.rawChinese, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
@@ -250,20 +264,26 @@ private fun SubtitleLineCard(line: SubtitleLine, onReplay: (String, LangCode) ->
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary,
                         )
-                        when (result.status) {
-                            OutputStatus.READY ->
-                                Text(result.text ?: "", style = MaterialTheme.typography.bodyMedium)
-                            OutputStatus.NEEDS_CONFIRMATION ->
-                                Text(
-                                    "${result.text ?: ""}（${stringResource(R.string.result_needs_confirmation)}）",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                            OutputStatus.UNAVAILABLE ->
+                        when {
+                            result.status == OutputStatus.UNAVAILABLE ->
                                 Text(
                                     stringResource(R.string.result_unavailable),
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontStyle = FontStyle.Italic,
                                 )
+                            result.status == OutputStatus.NEEDS_CONFIRMATION && !result.userConfirmed ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "${result.text ?: ""}（${stringResource(R.string.result_needs_confirmation)}）",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                    TextButton(onClick = {
+                                        correcting = language to (result.text ?: "")
+                                    }) { Text(stringResource(R.string.action_review)) }
+                                }
+                            else ->
+                                Text(result.text ?: "", style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     if (language in line.unspokenLanguages) {
@@ -281,6 +301,62 @@ private fun SubtitleLineCard(line: SubtitleLine, onReplay: (String, LangCode) ->
             }
         }
     }
+
+    correcting?.let { (language, draftText) ->
+        CorrectionDialog(
+            rawChinese = line.rawChinese,
+            language = language,
+            draftText = draftText,
+            onDismiss = { correcting = null },
+            onSave = { text ->
+                onCorrect(line.segmentId, language, text)
+                correcting = null
+            },
+        )
+    }
+}
+
+/**
+ * 核对/纠错对话框（§2.7，2026-09-23 用户决定）：原文只读（§2.4.5 保真基准
+ * 不可改），候选文本可编辑；保存即人工确认——有改动落库 source=USER。
+ */
+@Composable
+private fun CorrectionDialog(
+    rawChinese: String,
+    language: LangCode,
+    draftText: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var text by remember(draftText) { mutableStateOf(draftText) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.correction_title, languageDisplayName(language))) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    stringResource(R.string.correction_original_label),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                Text(rawChinese, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    stringResource(R.string.correction_candidate_label),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text) }) { Text(stringResource(R.string.action_save)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
 }
 
 @Composable

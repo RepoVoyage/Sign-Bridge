@@ -40,6 +40,11 @@
     <string name="action_replay">重播</string>
     <string name="result_unavailable">不可用</string>
     <string name="result_needs_confirmation">待核对</string>
+    <string name="action_review">核对</string>
+    <string name="correction_title">核对/纠错（%1$s）</string>
+    <string name="correction_original_label">识别原文（不可修改）</string>
+    <string name="correction_candidate_label">候选文本（可修改，保存即确认）</string>
+    <string name="action_save">保存</string>
 
     <string name="settings_title">设置</string>
     <string name="settings_languages_title">字幕语言</string>

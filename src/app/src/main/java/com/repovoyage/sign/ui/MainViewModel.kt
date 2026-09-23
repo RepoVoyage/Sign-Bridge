@@ -17,6 +17,7 @@ import com.repovoyage.sign.camera.SessionState
 import com.repovoyage.sign.capture.CaptureEntryImpl
 import com.repovoyage.sign.pipeline.SubtitleState
 import com.repovoyage.sign.recognition.RecognitionSourceImpl
+import com.repovoyage.sign.sentence.LangCode
 import com.repovoyage.sign.service.CameraBridgeForegroundService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -210,8 +211,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun discardPending(segmentId: String) = signApp.pipeline.discardPending(segmentId)
 
-    fun replay(segmentId: String, language: com.repovoyage.sign.sentence.LangCode) =
+    fun replay(segmentId: String, language: LangCode) =
         signApp.pipeline.replay(segmentId, language)
+
+    /** LLM 低置信结果的核对/纠错（§2.7 疑义核对入口） */
+    fun submitCorrection(segmentId: String, language: LangCode, text: String) =
+        signApp.pipeline.submitCorrection(segmentId, language, text)
 
     override fun onCleared() {
         sessionJobs.forEach { it.cancel() }

@@ -263,7 +263,7 @@ data class ConfirmedSentence(
 
 ```kotlin
 enum class LanguageBackend { LOCAL, CLOUD }
-enum class OutputSource { LOCAL, CLOUD, FALLBACK }
+enum class OutputSource { LOCAL, CLOUD, FALLBACK, USER }   // USER = 人工核对修正（仅纠错路径产生，2026-09-23）
 enum class OutputStatus { READY, NEEDS_CONFIRMATION, UNAVAILABLE }
 
 data class OutputPreferences(

@@ -268,6 +268,52 @@ class TranslationPipelineTest {
     }
 
     @Test
+    fun `纠错落库 USER 而原样确认保留模型来源`() = runBlocking {
+        processor.status = OutputStatus.NEEDS_CONFIRMATION
+        val pipeline = newPipeline()
+        pipeline.start("s-test")
+
+        // seg-1：文本有改动 → source=USER、status=READY，展示层撤下待核对
+        source.emit(update("我有3个孩子", BoundaryReliability.RELIABLE))
+        waitUntil {
+            pipeline.state.value.lines.any { line ->
+                line.results.values.any { it.status == OutputStatus.NEEDS_CONFIRMATION }
+            }
+        }
+        pipeline.submitCorrection("seg-1", LangCode("zh-CN"), "我有三个孩子。")
+        waitUntil { cache.merges.any { it.text == "我有三个孩子。" } }
+        val corrected = cache.merges.first { it.text == "我有三个孩子。" }
+        assertEquals("USER", corrected.source)
+        assertEquals("READY", corrected.status)
+        val shown = pipeline.state.value.lines.first { it.segmentId == "seg-1" }
+            .results[LangCode("zh-CN")]
+        assertEquals(OutputSource.USER, shown?.source)
+        assertTrue(shown?.userConfirmed == true)
+
+        // seg-2：原样保存 → 人工确认，source 保留模型来源
+        source.emit(
+            RecognitionUpdate(
+                sequenceEpoch = 1, segmentId = "seg-2", draftText = "请跟我来",
+                tokenSpans = listOf(TokenSpan("请跟我来", 4_000_000, 6_000_000, true)),
+                confidence = 0.9f,
+                boundary = BoundarySignal(6_500_000, 500_000, BoundaryReliability.RELIABLE, BoundarySource.MODEL),
+            ),
+        )
+        waitUntil { pipeline.state.value.lines.any { it.segmentId == "seg-2" && it.results.isNotEmpty() } }
+        pipeline.submitCorrection("seg-2", LangCode("zh-CN"), "整理后：请跟我来")
+        waitUntil { cache.merges.any { it.segmentId == "seg-2" && it.status == "READY" } }
+        val confirmed = cache.merges.first { it.segmentId == "seg-2" && it.status == "READY" }
+        assertEquals("CLOUD", confirmed.source)
+
+        // 未知段无副作用
+        val mergesBefore = cache.merges.size
+        pipeline.submitCorrection("no-such-seg", LangCode("zh-CN"), "x")
+        delay(30)
+        assertEquals(mergesBefore, cache.merges.size)
+        scope.cancel()
+    }
+
+    @Test
     fun `识别源不可用则管线拒绝启动`() = runBlocking {
         source = FakeSource(isAvailable = false)
         val pipeline = newPipeline()
