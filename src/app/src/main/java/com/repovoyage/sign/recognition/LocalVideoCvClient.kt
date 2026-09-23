@@ -41,7 +41,10 @@ class LocalVideoCvClient(private val clientProvider: () -> OkHttpClient = { OkHt
                         throw IOException("CV HTTP 429：服务端限流，退避重试 $attempt 次后仍被拒")
                     }
                     attempt++
-                    delay(minOf(outcome.retryAfterMs ?: RATE_LIMIT_BACKOFF_MS * attempt, RATE_LIMIT_MAX_BACKOFF_MS))
+                    val backoff = minOf(outcome.retryAfterMs ?: RATE_LIMIT_BACKOFF_MS * attempt, RATE_LIMIT_MAX_BACKOFF_MS)
+                    // 仅状态码与退避时长（无帧内容/凭据，§2.6）：区分 429 风暴与推理慢
+                    android.util.Log.i(TAG, "CV 429 限流，退避 ${backoff}ms 后第 $attempt 次重试")
+                    delay(backoff)
                 }
             }
         }
@@ -84,6 +87,7 @@ class LocalVideoCvClient(private val clientProvider: () -> OkHttpClient = { OkHt
         }
 
     private companion object {
+        const val TAG = "ClipCv"
         const val RECOGNIZE_URL = "https://101.37.234.129/v1/recognize"
         const val MAX_BYTES = 32L * 1024 * 1024
         const val RATE_LIMIT_RETRIES = 2
