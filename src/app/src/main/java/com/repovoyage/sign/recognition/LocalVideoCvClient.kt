@@ -69,8 +69,15 @@ class LocalVideoCvClient(private val clientProvider: () -> OkHttpClient = { OkHt
                     }
                     val body = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
-                        val error = runCatching { JSONObject(body).optString("error") }.getOrNull()
-                        throw IOException("CV HTTP ${response.code}${error?.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
+                        // 服务端错误详情：error/detail 字段（FastAPI 校验错误为 detail
+                        // 数组），无 JSON 结构则截取原始响应——422 等语义拒绝必须
+                        // 把服务端理由带上状态行，否则无法定位
+                        val detail = runCatching {
+                            val json = JSONObject(body)
+                            (json.opt("error") ?: json.opt("detail"))?.toString()
+                                ?.takeIf { it.isNotBlank() && it != "null" }
+                        }.getOrNull() ?: body.take(160).takeIf { it.isNotBlank() }
+                        throw IOException("CV HTTP ${response.code}${detail?.let { "：$it" } ?: ""}")
                     }
                     Attempt.Success(parseCvResponse(body))
                 }

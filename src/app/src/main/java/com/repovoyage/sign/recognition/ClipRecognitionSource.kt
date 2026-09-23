@@ -275,7 +275,10 @@ class ClipRecognitionSource(
                 _statusText.value = "已收 ${gestures.size} 词；打完点「完成本句」"
             } else {
                 _needsRepeat.emit(Unit)
-                _statusText.value = "该词未加入：${result.status}，请重打"
+                // 带上帧数/手部帧占比：区分「切片坏了」（帧数异常少）与
+                // 「机位看不到手」（帧数正常但占比低）两类根因
+                _statusText.value = "该词未加入：${result.status}" +
+                    "（${result.frames} 帧、手部 ${(result.anyHandFraction * 100).toInt()}%），请重打"
             }
         }
     }
