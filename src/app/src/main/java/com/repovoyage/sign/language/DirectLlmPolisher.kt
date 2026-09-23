@@ -37,7 +37,7 @@ private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
  * 剩余预算（上限 10s，§6.2 云端每句 10s）。
  */
 class DirectLlmPolisher(
-    private val baseUrl: String,              // API 前缀（通常含 /v1），不含 /chat/completions
+    private val baseUrl: String,              // OpenAI 兼容 API 前缀，不含 /chat/completions（/v1 习惯因供应商而异）
     private val apiKey: String,
     private val model: String,
     private val monoMs: () -> Long = SystemClock::elapsedRealtime,

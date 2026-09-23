@@ -58,9 +58,9 @@
     <string name="cache_notice_body">本 App 默认在本机保存已确认的文本与翻译结果，用于历史回看与导出。\n\n保留期限：最近 90 天且不超过 10000 条，超限自动清理。\n删除方法：历史页可按句、按会话或全部删除；也可在设置中关闭缓存（关闭后不再写入新记录）。\n\n数据仅保存在本机应用私有目录，不进入系统备份。</string>
     <string name="cache_notice_confirm">知道了</string>
     <string name="settings_llm_title">云端 LLM 凭据</string>
-    <string name="settings_llm_hint">凭据仅存本机；未配置时语言结果显示为不可用</string>
+    <string name="settings_llm_hint">凭据仅存本机；App 在地址后追加 /chat/completions，任何 OpenAI 兼容服务均可；未配置时语言结果显示为不可用</string>
     <string name="settings_llm_cost_notice">启用云端后，已确认的文本将离机发送至您配置的服务（可能产生 API 费用）；连接相机期间走蜂窝数据（可能产生流量费用）。请确认所选服务的计费方式后再启用。</string>
-    <string name="llm_base_url_label">API 地址（含 /v1）</string>
+    <string name="llm_base_url_label">API 地址（OpenAI 兼容）</string>
     <string name="llm_api_key_label">API 密钥</string>
     <string name="llm_model_label">模型名</string>
     <string name="llm_save">保存凭据</string>
