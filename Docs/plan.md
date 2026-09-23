@@ -256,6 +256,23 @@ compileSdk 37，锁 4.x）+ 管线生命周期挂钩（启动且凭据已配置 
 Polisher 7 条 loopback 契约测试迁移后仍绿，双 flavor + release 构建通过。
 待做：真机双网验证（相机热点 + SIM 并发，需用户凭据与相机在场）。
 
+**进度（2026-09-23 深夜三，P7 尾款·通知与震动）**：LLM 真实接入跑通
+（用户凭据 DeepSeek OpenAI 兼容端点，排查确认双因：原配 URL 为百炼
+Anthropic 协议端点（App 契约 §6.3 只讲 Chat Completions）+ 模型名不存在；
+凭据文案改供应商中立"API 地址（OpenAI 兼容）"）；蜂窝双网系统层验证通过
+（dumpsys 确认 App 的 CELLULAR 请求被 LTE 满足，相机 Wi-Fi 并存，蜂窝
+ping 公网 0 丢包）。震动按**用户决定收紧：仅 LLM 翻译低置信
+（NEEDS_CONFIRMATION）震动**，30s 限频、遵守勿扰/静音（Vibrator 绕过
+系统勿扰故应用侧自查 interruptionFilter+ringerMode）、短双震波形——
+ARCHITECTURE §2.7 表格已按决定修订（低电/断连/识别低置信一律只显不震）。
+FGS 通知脱离 P2 占位：文本跟随会话状态实时刷新（sessionStateText 抽为
+UI/通知共用）。修复：Alerter 限频溢出（Long.MIN_VALUE 哨兵 → nullable）。
+验收：JVM 208 条全绿（+3 Alerter 语义 +1 管线仅低置信震动；另修复
+FINAL 全链路测试对异步副作用的竞态断言）、双 flavor + release 构建通过、
+training debug 已装机。待做：真机震动手感实测（§2.7 要求波形实测调参，
+需 LLM 返回 NEEDS_CONFIRMATION 场景）、P7 其余尾款（待核对确认/纠错交互、
+机位文字指引、保真样本集系统性验收、本地 LLM 引擎决策）。
+
 ### P8 验收（持续，按 ARCHITECTURE.md §8 全表）
 
 每阶段结束跑对应行；发布前全表过一遍 + 持续 30 分钟压力 + 训练隔离检查（productionRelease 无采集入口/端口/落盘）。
