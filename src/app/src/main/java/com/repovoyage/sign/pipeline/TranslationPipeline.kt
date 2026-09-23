@@ -16,6 +16,7 @@ import com.repovoyage.sign.language.PolishInput
 import com.repovoyage.sign.language.PolishOutput
 import com.repovoyage.sign.net.CloudNetworkManager
 import com.repovoyage.sign.recognition.RecognitionSource
+import com.repovoyage.sign.sentence.BoundaryReliability
 import com.repovoyage.sign.sentence.ConfirmReason
 import com.repovoyage.sign.sentence.ConfirmedSentence
 import com.repovoyage.sign.sentence.LangCode
@@ -155,7 +156,7 @@ class TranslationPipeline(
             launch {
                 source.updates.collect { update ->
                     trackPts(update)
-                    handle(sm.submit(update), sm)
+                    submit(update, sm)
                 }
             }
             launch {
@@ -266,6 +267,27 @@ class TranslationPipeline(
         segmentPts[id] = (spanStart ?: oldStart) to (cutoff ?: spanEnd ?: oldEnd)
     }
 
+    /**
+     * 识别更新入口：句子置信度（组合 LLM 给出，[RecognitionUpdate.confidence]）
+     * 低于 [LOW_CONFIDENCE_THRESHOLD] 时，边界可靠性强制降为 UNCERTAIN →
+     * 段状态机转待核对（唯一待核实标志来源之一，2026-09-23 用户流程）。
+     * CV 侧候选分散等不确定由组合 LLM 消化，不直接打扰用户。
+     */
+    private fun submit(update: RecognitionUpdate, sm: SentenceManager) {
+        val effective = if (
+            update.confidence != null &&
+            update.confidence < LOW_CONFIDENCE_THRESHOLD &&
+            update.boundary != null
+        ) {
+            update.copy(
+                boundary = update.boundary.copy(reliability = BoundaryReliability.UNCERTAIN),
+            )
+        } else {
+            update
+        }
+        handle(sm.submit(effective), sm)
+    }
+
     private fun handle(events: List<SentenceEvent>, sm: SentenceManager) {
         for (event in events) when (event) {
             is SentenceEvent.DraftUpdated ->
@@ -282,12 +304,17 @@ class TranslationPipeline(
 
             is SentenceEvent.Final -> onFinal(event.sentence, sm)
 
-            is SentenceEvent.NeedsConfirmation -> _state.update { st ->
-                val text = st.draft?.takeIf { it.segmentId == event.segmentId }?.text ?: ""
-                st.copy(
-                    pendingConfirm = st.pendingConfirm.filterNot { it.segmentId == event.segmentId } +
-                        PendingConfirmLine(event.segmentId, text, event.reason),
-                )
+            is SentenceEvent.NeedsConfirmation -> {
+                // 待核实标志的唯一识别侧来源 = 组合 LLM 句子置信度过低（submit 降级）；
+                // 与 guard 保真失败同桶：标志 + 震动
+                alerter?.onNeedsConfirmation()
+                _state.update { st ->
+                    val text = st.draft?.takeIf { it.segmentId == event.segmentId }?.text ?: ""
+                    st.copy(
+                        pendingConfirm = st.pendingConfirm.filterNot { it.segmentId == event.segmentId } +
+                            PendingConfirmLine(event.segmentId, text, event.reason),
+                    )
+                }
             }
 
             is SentenceEvent.Interrupted -> _state.update { st ->
@@ -377,5 +404,9 @@ class TranslationPipeline(
     private companion object {
         const val MAX_LINES = 50
         const val MAX_TRACKED_RESULTS = 200
+
+        /** 组合 LLM 句子置信度阈值【初始值 0.7，2026-09-23 用户定】；
+         低于即待核实+震动；后续随校准集/ModelSpec confidenceCalibration 调整 */
+        const val LOW_CONFIDENCE_THRESHOLD = 0.7f
     }
 }

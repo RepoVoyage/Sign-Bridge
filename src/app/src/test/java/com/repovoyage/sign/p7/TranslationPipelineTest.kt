@@ -314,6 +314,42 @@ class TranslationPipelineTest {
     }
 
     @Test
+    fun `句子置信度低于阈值降级待核实并震动`() = runBlocking {
+        var vibrations = 0
+        val alerter = ConfirmationAlerter(nowMs = { 0 }, canVibrate = { true }, vibrate = { vibrations++ })
+        val pipeline = TranslationPipeline(
+            source = source, settings = settings, processor = processor, tts = tts, cache = cache,
+            scope = scope, wallMs = { 1_000 }, finalizeDelayMs = 50, alerter = alerter,
+        )
+        pipeline.start("s-test")
+        // 低置信 0.55 < 0.7 + RELIABLE 边界 → 降级 UNCERTAIN → 待核实 + 震动
+        source.emit(
+            RecognitionUpdate(
+                sequenceEpoch = 1, segmentId = "seg-low", draftText = "可能是低电量",
+                tokenSpans = listOf(TokenSpan("可能是低电量", 1_000_000, 3_000_000, true)),
+                confidence = 0.55f,
+                boundary = BoundarySignal(3_500_000, 500_000, BoundaryReliability.RELIABLE, BoundarySource.MODEL),
+            ),
+        )
+        waitUntil { pipeline.state.value.pendingConfirm.isNotEmpty() }
+        assertEquals(1, vibrations)
+        // 高置信 0.9 → 正常收尾，无待核实、无震动
+        source.emit(
+            RecognitionUpdate(
+                sequenceEpoch = 1, segmentId = "seg-high", draftText = "我需要帮助",
+                tokenSpans = listOf(TokenSpan("我需要帮助", 4_000_000, 6_000_000, true)),
+                confidence = 0.9f,
+                boundary = BoundarySignal(6_500_000, 500_000, BoundaryReliability.RELIABLE, BoundarySource.MODEL),
+            ),
+        )
+        waitUntil { pipeline.state.value.lines.any { it.segmentId == "seg-high" } }
+        delay(50)
+        assertEquals(1, vibrations)
+        assertTrue(pipeline.state.value.pendingConfirm.none { it.segmentId == "seg-high" })
+        scope.cancel()
+    }
+
+    @Test
     fun `识别源不可用则管线拒绝启动`() = runBlocking {
         source = FakeSource(isAvailable = false)
         val pipeline = newPipeline()
