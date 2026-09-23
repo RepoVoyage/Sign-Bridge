@@ -42,9 +42,13 @@ class AutoSpeakQueue(
     /** 去重键会话内终身有效：播报过的键再次入队仍判重复 */
     private val seenKeys = mutableSetOf<SpeakKey>()
 
-    fun enqueue(request: SpeakRequest, nowMonoMs: Long): EnqueueResult {
+    /** 待播是否有积压（TtsManager ticker 保活判断用） */
+    val hasBacklog: Boolean
+        get() = waiting.isNotEmpty()
+
+    fun enqueue(request: SpeakRequest, nowMonoMs: Long, bypassDedup: Boolean = false): EnqueueResult {
         if (waiting.size >= capacity) return EnqueueResult.Rejected(RejectReason.QUEUE_FULL)
-        if (!seenKeys.add(SpeakKey(request.sessionId, request.segmentId, request.language))) {
+        if (!bypassDedup && !seenKeys.add(SpeakKey(request.sessionId, request.segmentId, request.language))) {
             return EnqueueResult.Duplicate
         }
         waiting += Entry(request, nowMonoMs)
@@ -63,6 +67,11 @@ class AutoSpeakQueue(
     /** 当前播报结束，允许下一条 */
     fun onPlaybackFinished() {
         current = null
+    }
+
+    /** 用户停止/显式重播：清空待播（不产生事件；正在播报的由引擎回调终结） */
+    fun clear() {
+        waiting.clear()
     }
 
     /**
