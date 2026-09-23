@@ -244,6 +244,18 @@ productionRelease 构建通过、training debug 已装机（手动验收进行�
 待做：§2.4.7 蜂窝并发（相机会话中云端 LLM，测试机有 SIM 可完整验证）、
 UI 手动验收收尾、P6 识别接入。
 
+**进度（2026-09-23 深夜二，§2.4.7 蜂窝并发）**：云端 LLM 双网路径落地——
+`CloudNetworkManager`（requestNetwork 等回调不轮询、客户端按有效网络复用、
+断网废弃 + cancelAll 在途请求、release 注销；句柄/客户端工厂抽象化，
+状态机 JVM 可测）+ `DirectLlmPolisher` 迁 OkHttp 4.12（clientProvider 注入，
+预算超时经 newBuilder 派生共享连接池；5.x 的 okhttp-android 要求
+compileSdk 37，锁 4.x）+ 管线生命周期挂钩（启动且凭据已配置 → acquire，
+停止 → release，凭据中途变更跟随启停）；`network_security_config.xml`
+照 Demo 抄写（明文例外仅相机本地地址，云端强制 HTTPS）；设置页加费用与
+文本离机告知（第 6 条）。验收：JVM 204 条全绿（+7 状态机 +1 挂钩），
+Polisher 7 条 loopback 契约测试迁移后仍绿，双 flavor + release 构建通过。
+待做：真机双网验证（相机热点 + SIM 并发，需用户凭据与相机在场）。
+
 ### P8 验收（持续，按 ARCHITECTURE.md §8 全表）
 
 每阶段结束跑对应行；发布前全表过一遍 + 持续 30 分钟压力 + 训练隔离检查（productionRelease 无采集入口/端口/落盘）。
