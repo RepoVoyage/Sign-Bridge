@@ -60,6 +60,7 @@ class TranslationPipelineTest {
     private class FakeSource(override val isAvailable: Boolean = true) : RecognitionSource {
         private val _updates = MutableSharedFlow<RecognitionUpdate>(extraBufferCapacity = 64)
         override val updates: Flow<RecognitionUpdate> = _updates
+        override val sourceDescription: String = "测试桩源"
         var startCount = 0
         var stopCount = 0
         override fun start() { startCount++ }

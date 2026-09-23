@@ -93,6 +93,19 @@ fun SettingsScreen(vm: SettingsViewModel) {
                 checked = ttsEnabled,
                 onCheckedChange = vm::setTtsEnabled,
             )
+            val unready by vm.voiceUnreadySpoken.collectAsStateWithLifecycle()
+            if (unready.isNotEmpty()) {
+                val names = StringBuilder()
+                for (lang in unready) {
+                    if (names.isNotEmpty()) names.append("、")
+                    names.append(languageDisplayName(lang))
+                }
+                Text(
+                    stringResource(R.string.voice_not_ready_list, names.toString()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         // ------------------------------------------------ 识别模型

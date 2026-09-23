@@ -25,6 +25,8 @@ object RecognitionSourceImpl : RecognitionSource {
 
     override val isAvailable: Boolean = true
 
+    override val sourceDescription: String = "识别源：桩源（训练调试用）"
+
     private val _updates = MutableSharedFlow<RecognitionUpdate>(extraBufferCapacity = 64)
     override val updates: Flow<RecognitionUpdate> = _updates
 

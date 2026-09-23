@@ -11,7 +11,9 @@ import com.repovoyage.sign.settings.LlmCredentials
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -21,7 +23,8 @@ import kotlinx.coroutines.launch
  */
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val settings: AppSettings = (app as SignApp).settings
+    private val signApp: SignApp = app as SignApp
+    private val settings: AppSettings = signApp.settings
 
     val supportedLanguages = AppSettings.SUPPORTED_LANGUAGES
 
@@ -45,6 +48,21 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 模型目录（两模型均云端部署，按拍摄视角选择） */
     val modelEntries = ModelCatalog.ENTRIES
+
+    /** 语音未就绪 ∩ 语音语言（§2.5.1 标记用）；3s 轮询引擎就绪态 */
+    val voiceUnreadySpoken: StateFlow<Set<LangCode>> = combine(
+        settings.spokenLanguages,
+        settings.ttsEnabled,
+        flow {
+            while (true) {
+                emit(Unit)
+                kotlinx.coroutines.delay(3_000)
+            }
+        },
+    ) { spoken, enabled, _ ->
+        if (!enabled) emptySet()
+        else spoken.filterNot { signApp.ttsSpeaker.isLanguageReady(it) }.toSet()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     // 凭据编辑草稿（保存才写入）
     val urlDraft = MutableStateFlow("")

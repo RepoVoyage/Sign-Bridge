@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.emptyFlow
  */
 object RecognitionSourceImpl : RecognitionSource {
     override val isAvailable: Boolean = false
+
+    override val sourceDescription: String = "识别源：云端服务未接线（P6）"
     override val updates: Flow<RecognitionUpdate> = emptyFlow()
     override fun start() {}
     override fun stop() {}

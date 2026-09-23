@@ -129,6 +129,15 @@ class TranslationPipeline(
     private val _state = MutableStateFlow(SubtitleState())
     val state: StateFlow<SubtitleState> = _state.asStateFlow()
 
+    /** 重打提示计数器（needs_repeat，P6 EventMapper 调用）：UI 自最后一次起展示 6s；
+     非待核实标志、不震动（2026-09-23 置信度流程定稿） */
+    private val _repeatPromptCount = MutableStateFlow(0)
+    val repeatPromptCount: StateFlow<Int> = _repeatPromptCount.asStateFlow()
+
+    fun reportNeedsRepeat() {
+        _repeatPromptCount.value += 1
+    }
+
     private var runJob: Job? = null
     private var manager: SentenceManager? = null
     private var sessionId: String = ""

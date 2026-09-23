@@ -84,6 +84,17 @@ class SdkCameraSession(
     private val _decodeStats = MutableStateFlow<DecodeStats?>(null)
     val decodeStats: StateFlow<DecodeStats?> = _decodeStats.asStateFlow()
 
+    /** training 诊断（§2.7 缓冲占用/缺帧统计）；生产界面不展示 */
+    private val _diagStats = MutableStateFlow(DiagStats(0, 0, 0))
+    val diagStats: StateFlow<DiagStats> = _diagStats.asStateFlow()
+
+    private val gapCount = java.util.concurrent.atomic.AtomicLong(0)
+
+    private fun reportGap(event: FrameGapEvent) {
+        gapCount.incrementAndGet()
+        decodedFrameSink?.onGap(event)
+    }
+
     /** 解码输出消费方（flavor 注入，API.md §2.2）；null = 仅统计（P3 验证期形态） */
     @Volatile
     var decodedFrameSink: DecodedFrameSink? = null
@@ -288,6 +299,7 @@ class SdkCameraSession(
                     syncFrames = (st?.syncFrames ?: 0) + frames.count { it.isSyncPoint },
                 )
                 frames.forEach { frameQueue.offer(it) }
+                _diagStats.value = _diagStats.value.copy(ingestDepth = queue.depth, gaps = gapCount.get())
             }
         }
     }
@@ -309,7 +321,7 @@ class SdkCameraSession(
             frameQueue.clear()
             decoder?.flush()
             gate.reset()
-            decodedFrameSink?.onGap(FrameGapEvent(GapReason.DECODE_RESET, gatedGeneration))
+            reportGap(FrameGapEvent(GapReason.DECODE_RESET, gatedGeneration))
             scope.launch { runCatching { camera.preview.requestStreamIframe() } }
         }
         val rebuild: () -> Unit = {
@@ -317,12 +329,13 @@ class SdkCameraSession(
             decoder?.stop()
             decoder = null
             gate.reset()
-            decodedFrameSink?.onGap(FrameGapEvent(GapReason.DECODE_RESET, gatedGeneration))
+            reportGap(FrameGapEvent(GapReason.DECODE_RESET, gatedGeneration))
             scope.launch { runCatching { camera.preview.requestStreamIframe() } }
         }
         try {
             while (isActive) {
                 val frame = frameQueue.receive()
+                _diagStats.value = _diagStats.value.copy(decodeDepth = frameQueue.depth, gaps = gapCount.get())
                 if (frameQueue.isOverloaded) {
                     resync()
                     continue
@@ -330,7 +343,7 @@ class SdkCameraSession(
                 // 换代 = 断流重连：旧代残留帧与新一代之间必有缺口
                 if (frame.streamGeneration != gatedGeneration) {
                     if (gatedGeneration >= 0) {
-                        decodedFrameSink?.onGap(FrameGapEvent(GapReason.RECONNECT, frame.streamGeneration))
+                        reportGap(FrameGapEvent(GapReason.RECONNECT, frame.streamGeneration))
                     }
                     gatedGeneration = frame.streamGeneration
                 }
@@ -907,3 +920,6 @@ class SdkCameraSession(
         const val STREAM_PARAMS_POLL_INTERVAL_MS = 300L
     }
 }
+
+/** training 诊断统计（§2.7 缓冲占用/缺帧）：入流/待解码队列深度 + 累计 gap 次数 */
+data class DiagStats(val ingestDepth: Int, val decodeDepth: Int, val gaps: Long)

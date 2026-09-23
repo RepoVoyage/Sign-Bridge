@@ -57,6 +57,19 @@ fun MainScreen(
     val statsText by vm.statsText.collectAsStateWithLifecycle()
     val scanStatus by vm.scanStatus.collectAsStateWithLifecycle()
     val devices by vm.devices.collectAsStateWithLifecycle()
+    val selectedModelName by vm.selectedModelName.collectAsStateWithLifecycle()
+    val voiceUnready by vm.voiceUnreadySpoken.collectAsStateWithLifecycle()
+    val repeatCount by vm.repeatPromptCount.collectAsStateWithLifecycle()
+
+    // 重打提示：自最后一次触发展示 6s（needs_repeat，非待核实标志）
+    var showRepeat by androidx.compose.runtime.mutableStateOf(false)
+    androidx.compose.runtime.LaunchedEffect(repeatCount) {
+        if (repeatCount > 0) {
+            showRepeat = true
+            kotlinx.coroutines.delay(6_000)
+            showRepeat = false
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -154,6 +167,31 @@ fun MainScreen(
             }
         }
 
+        // 识别源 + 模型状态行
+        Text(
+            "${vm.sourceDescription}｜当前模型：$selectedModelName",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // 重打提示横幅（needs_repeat）
+        if (showRepeat) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                ),
+            ) {
+                Text(
+                    stringResource(R.string.repeat_prompt),
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+            }
+        }
+
         // 训练版采集入口（production 无入口，P8 验收）
         if (vm.captureEntry.isAvailable) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -171,6 +209,11 @@ fun MainScreen(
             draft = pipeline.draft,
             lines = pipeline.lines,
             pendingConfirm = pipeline.pendingConfirm,
+            voiceUnready = voiceUnready,
+            emptyHint = stringResource(
+                if (pipeline.phase == PipelinePhase.RUNNING) R.string.subtitle_empty_running
+                else R.string.subtitle_empty_idle,
+            ),
             onDiscard = vm::discardPending,
             onReplay = vm::replay,
             onCorrect = vm::submitCorrection,
@@ -184,6 +227,8 @@ private fun SubtitleArea(
     draft: com.repovoyage.sign.pipeline.DraftLine?,
     lines: List<SubtitleLine>,
     pendingConfirm: List<com.repovoyage.sign.pipeline.PendingConfirmLine>,
+    voiceUnready: Set<LangCode>,
+    emptyHint: String,
     onDiscard: (String) -> Unit,
     onReplay: (String, LangCode) -> Unit,
     onCorrect: (String, LangCode, String) -> Unit,
@@ -194,6 +239,16 @@ private fun SubtitleArea(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        if (draft == null && lines.isEmpty() && pendingConfirm.isEmpty()) {
+            item(key = "empty") {
+                Text(
+                    emptyHint,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 24.dp),
+                )
+            }
+        }
         if (draft != null) {
             item(key = "draft") {
                 Card(
@@ -249,7 +304,7 @@ private fun SubtitleArea(
             }
         }
         items(lines.asReversed(), key = { it.segmentId }) { line ->
-            SubtitleLineCard(line, onReplay, onCorrect)
+            SubtitleLineCard(line, voiceUnready, onReplay, onCorrect)
         }
     }
 }
@@ -257,6 +312,7 @@ private fun SubtitleArea(
 @Composable
 private fun SubtitleLineCard(
     line: SubtitleLine,
+    voiceUnready: Set<LangCode>,
     onReplay: (String, LangCode) -> Unit,
     onCorrect: (String, LangCode, String) -> Unit,
 ) {
@@ -282,11 +338,22 @@ private fun SubtitleLineCard(
             }
             line.results.forEach { (language, result) ->
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        languageDisplayName(language),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            languageDisplayName(language),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                        // §2.5.1：语音未就绪的语言仅显示字幕并明确标记
+                        if (language in voiceUnready) {
+                            Text(
+                                stringResource(R.string.voice_unavailable_marker),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 6.dp),
+                            )
+                        }
+                    }
                     when {
                         result.status == OutputStatus.UNAVAILABLE ->
                             Text(

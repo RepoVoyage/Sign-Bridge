@@ -16,14 +16,20 @@ import com.repovoyage.sign.camera.SessionEvent
 import com.repovoyage.sign.camera.SessionState
 import com.repovoyage.sign.capture.CaptureEntryImpl
 import com.repovoyage.sign.pipeline.SubtitleState
+import com.repovoyage.sign.recognition.ModelCatalog
 import com.repovoyage.sign.recognition.RecognitionSourceImpl
 import com.repovoyage.sign.sentence.LangCode
 import com.repovoyage.sign.service.CameraBridgeForegroundService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -190,6 +196,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     lastDecoded = -1
                 }
+                // training 诊断（§2.7 缓冲占用/缺帧统计）
+                val dg = sdk.diagStats.value
+                if (text.isNotEmpty()) {
+                    text += "\n" + app.getString(
+                        R.string.diag_stats_format, dg.ingestDepth, dg.decodeDepth, dg.gaps,
+                    )
+                }
                 if (text.isNotEmpty()) _statsText.value = text
             }
         }
@@ -217,6 +230,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** LLM 低置信结果的核对/纠错（§2.7 疑义核对入口） */
     fun submitCorrection(segmentId: String, language: LangCode, text: String) =
         signApp.pipeline.submitCorrection(segmentId, language, text)
+
+    // ------------------------------------------------ 状态行/提示/诊断
+
+    val repeatPromptCount: StateFlow<Int> = signApp.pipeline.repeatPromptCount
+
+    val sourceDescription: String = RecognitionSourceImpl.sourceDescription
+
+    val selectedModelName: StateFlow<String> = signApp.settings.selectedModelId
+        .map { id -> ModelCatalog.ENTRIES.find { it.id == id }?.displayName ?: "未选择模型" }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "未选择模型")
+
+    /** 语音未就绪 ∩ 语音语言（§2.5.1：仅显示字幕并明确标记）；3s 轮询引擎就绪态 */
+    val voiceUnreadySpoken: StateFlow<Set<LangCode>> = combine(
+        signApp.settings.spokenLanguages,
+        signApp.settings.ttsEnabled,
+        flow {
+            while (true) {
+                emit(Unit)
+                delay(3_000)
+            }
+        },
+    ) { spoken, enabled, _ ->
+        if (!enabled) emptySet()
+        else spoken.filterNot { signApp.ttsSpeaker.isLanguageReady(it) }.toSet()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     override fun onCleared() {
         sessionJobs.forEach { it.cancel() }

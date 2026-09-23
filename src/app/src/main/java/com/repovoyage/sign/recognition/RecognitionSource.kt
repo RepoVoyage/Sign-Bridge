@@ -16,6 +16,9 @@ interface RecognitionSource {
     /** 识别能力是否就绪；false 时管线不启动（ARCHITECTURE §6 错误矩阵） */
     val isAvailable: Boolean
 
+    /** 识别源描述（界面状态行展示） */
+    val sourceDescription: String
+
     val updates: Flow<RecognitionUpdate>
 
     fun start()

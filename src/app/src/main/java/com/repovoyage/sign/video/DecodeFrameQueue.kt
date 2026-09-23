@@ -23,6 +23,9 @@ class DecodeFrameQueue(
     private val lock = Any()
     private val channel = Channel<EncodedFrame>(capacity = maxFrames)
 
+    /** 当前待解码帧数（training 诊断显示用，§2.7 缓冲占用） */
+    val depth: Int get() = synchronized(lock) { queuedMonos.size }
+
     /** 队列内帧的入队时间账目（头元素即最老帧），与 channel 一一对应 */
     private val queuedMonos = ArrayDeque<Long>()
     private var queuedBytes = 0

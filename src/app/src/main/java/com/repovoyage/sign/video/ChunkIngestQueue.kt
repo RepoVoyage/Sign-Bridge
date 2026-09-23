@@ -23,6 +23,9 @@ class ChunkIngestQueue(
     private val lock = Any()
     private val channel = Channel<StreamChunk>(capacity = maxChunks)
 
+    /** 当前积压分片数（training 诊断显示用，§2.7 缓冲占用） */
+    val depth: Int get() = synchronized(lock) { queuedMonos.size }
+
     /** 队列内分片的接收时间账目（头元素即最老分片），与 channel 一一对应 */
     private val queuedMonos = ArrayDeque<Long>()
     private var queuedBytes = 0
