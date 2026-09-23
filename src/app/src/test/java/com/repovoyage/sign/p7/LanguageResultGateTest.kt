@@ -22,7 +22,7 @@ class LanguageResultGateTest {
             sessionId = "s-1", streamGeneration = 1, sequenceEpoch = 1,
             segmentId = seg, sentenceRevision = revision, settingsRevision = settingsRev,
             language = LangCode(lang), text = "译文", status = OutputStatus.READY,
-            source = OutputSource.LOCAL, elapsedMs = 100,
+            source = OutputSource.CLOUD, elapsedMs = 100,
         )
 
     @Test

@@ -1,7 +1,6 @@
 package com.repovoyage.sign.p7
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
-import com.repovoyage.sign.language.LanguageBackend
 import com.repovoyage.sign.sentence.LangCode
 import com.repovoyage.sign.settings.AppSettings
 import com.repovoyage.sign.settings.LlmCredentials
@@ -70,7 +69,6 @@ class AppSettingsTest {
         val prefs = settings.preferences.first()
         assertEquals(listOf(LangCode("zh-CN"), LangCode("en-US")), prefs.selectedLanguages)
         assertEquals(listOf(LangCode("en-US")), prefs.spokenLanguages)
-        assertEquals(LanguageBackend.CLOUD, prefs.backend)
         assertEquals(2L, prefs.revision)
     }
 

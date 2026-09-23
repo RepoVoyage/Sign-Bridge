@@ -2,8 +2,8 @@ package com.repovoyage.sign.language
 
 import com.repovoyage.sign.sentence.LangCode
 
-enum class LanguageBackend { LOCAL, CLOUD }
-enum class OutputSource { LOCAL, CLOUD, FALLBACK, USER }   // USER = 人工核对修正（仅纠错路径产生）
+/** 结果来源（2026-09-23 用户决定仅云端：本地引擎砍掉，LOCAL/FALLBACK 枚举值移除） */
+enum class OutputSource { CLOUD, USER }   // USER = 人工核对修正（仅纠错路径产生）
 enum class OutputStatus { READY, NEEDS_CONFIRMATION, UNAVAILABLE }
 
 /** API.md §6.1 — 语言处理结果 */

@@ -83,7 +83,7 @@ class LanguageProcessorTest {
     private fun prefs(vararg langs: String, revision: Long = 5) = OutputPreferences(
         selectedLanguages = langs.map { LangCode(it) },
         spokenLanguages = langs.map { LangCode(it) },
-        backend = LanguageBackend.CLOUD, revision = revision,
+        revision = revision,
     )
 
     private fun output(

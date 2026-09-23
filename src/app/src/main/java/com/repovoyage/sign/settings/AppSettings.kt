@@ -9,7 +9,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.repovoyage.sign.language.LanguageBackend
 import com.repovoyage.sign.language.OutputPreferences
 import com.repovoyage.sign.sentence.LangCode
 import kotlinx.coroutines.flow.Flow
@@ -27,8 +26,8 @@ private val Context.appSettingsStore: DataStore<Preferences> by preferencesDataS
  *   据此取消旧任务、拒绝旧结果（§2.4.4）
  * - LLM 凭据自持于本机（allowBackup=false，§6.3），发布包不内置密钥
  *
- * backend 暂固定 CLOUD（本地引擎选型为 plan.md 待决策项 #3）；语音总开关
- * [ttsEnabled] 独立于 spokenLanguages：关闭时管线立即停播（§2.4.4）。
+ * 语言处理仅云端（本地引擎按 2026-09-23 用户决定砍掉，无 backend 开关）；
+ * 语音总开关 [ttsEnabled] 独立于 spokenLanguages：关闭时管线立即停播（§2.4.4）。
  */
 class AppSettings(private val store: DataStore<Preferences>) {
 
@@ -71,7 +70,6 @@ class AppSettings(private val store: DataStore<Preferences>) {
             OutputPreferences(
                 selectedLanguages = selected,
                 spokenLanguages = spoken,
-                backend = LanguageBackend.CLOUD,
                 revision = revision,
             )
         }

@@ -20,7 +20,6 @@ interface LanguageProcessor {
 data class OutputPreferences(
     val selectedLanguages: List<LangCode>,    // 默认 [zh-CN]
     val spokenLanguages: List<LangCode>,      // 必须是 selectedLanguages 子集
-    val backend: LanguageBackend,
     val revision: Long,
 )
 
@@ -40,7 +39,7 @@ data class OutputPreferences(
  * - **去重**：经 [LanguageResultGate]（(sessionId, segmentId, sentenceRevision,
  *   language) 仅一个有效结果；settingsRevision 落后拒绝）
  * - 引擎失败（异常/超时）→ 该句全部语言 UNAVAILABLE，source=CLOUD
- *   （本地引擎就绪且剩余期限允许时才降级 FALLBACK——当前无本地实现）
+ *   （仅云端，无本地降级——2026-09-23 用户决定本地引擎砍掉）
  *
  * 上下文衔接：已处理句按序保留最近 [MAX_CONTEXT] 条，作为后续请求的
  * contextSentences（已确认句子，§6.2）。

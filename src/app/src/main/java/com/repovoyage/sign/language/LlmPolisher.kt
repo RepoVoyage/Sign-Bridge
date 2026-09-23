@@ -4,7 +4,7 @@ import com.repovoyage.sign.sentence.ConfirmedSentence
 import com.repovoyage.sign.sentence.LangCode
 
 /**
- * API.md §6.2 — LOCAL / CLOUD 两个实现共享的引擎契约。
+ * API.md §6.2 — 云端引擎契约（本地实现已移除，2026-09-23 用户决定仅云端）。
  * deadline 到达必须返回未完成标记或抛出，不得无限等待。
  */
 interface LlmPolisher {
