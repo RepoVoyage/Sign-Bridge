@@ -115,16 +115,20 @@ class ClipSegmenter(
                     generation = frame.streamGeneration
                     corrupted = false
                 }
-                val sample = annexBToAvcc(frame.data) ?: continue
+                // MediaMuxer expects Annex-B access units and writes MP4 length prefixes itself.
+                // Feeding it pre-converted AVCC makes the resulting MP4 undecodable.
+                val sample = annexBVclSample(frame.data) ?: continue
                 val info = MediaCodec.BufferInfo().apply {
                     presentationTimeUs = frame.ptsUs - startPts
                     size = sample.size
                     flags = if (frame.isSyncPoint) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                 }
                 runCatching { muxer!!.writeSampleData(track, java.nio.ByteBuffer.wrap(sample), info) }
+                    .onSuccess {
+                        framesWritten++
+                        lastPts = frame.ptsUs
+                    }
                     .onFailure { corrupted = true }
-                framesWritten++
-                lastPts = frame.ptsUs
             }
         } finally {
             closeSegment(emit = false)
@@ -141,23 +145,21 @@ class ClipSegmenter(
 }
 
 /**
- * Annex-B → AVCC（MP4 样本格式）：仅保留 VCL NAL（type 1/5），SPS/PPS/SEI
- * 走 format CSD 不进样本；4 字节起始码的多余前导 0 归上一 NAL 尾部，按
- * [H264DecodePrep] 同款规则裁掉。无 VCL 返回 null。
+ * Keep VCL NAL units in Annex-B format for Android MediaMuxer. SPS/PPS are
+ * supplied through MediaFormat CSD; the muxer converts sample start codes to
+ * MP4 length prefixes. No VCL returns null.
  */
-internal fun annexBToAvcc(data: ByteArray): ByteArray? {
+internal fun annexBVclSample(data: ByteArray): ByteArray? {
     val out = ByteArrayOutputStream()
     forEachAnnexBNal(data) { start, end ->
         val type = data[start].toInt() and 0x1F
         if (type == NAL_TYPE_SLICE || type == NAL_TYPE_IDR) {
             var e = end
             while (e > start && data[e - 1] == 0.toByte()) e--
-            val len = e - start
-            out.write(len ushr 24 and 0xFF)
-            out.write(len ushr 16 and 0xFF)
-            out.write(len ushr 8 and 0xFF)
-            out.write(len and 0xFF)
-            out.write(data, start, len)
+            if (e > start) {
+                out.write(byteArrayOf(0, 0, 0, 1))
+                out.write(data, start, e - start)
+            }
         }
     }
     return if (out.size() == 0) null else out.toByteArray()
