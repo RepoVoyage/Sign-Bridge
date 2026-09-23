@@ -11,6 +11,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,14 +46,17 @@ interface ClipFeed {
 }
 
 /**
- * 模型 B 固定窗口切片识别源（P6 联调，2026-09-23 用户定义切分 + 直接进
- * 字幕管线）：相机编码帧 → 固定时长 MP4 段 → 词级 CV 候选 → 用户「完成本句」
- * → Agent 组句 → [RecognitionUpdate] 进入既有管线（段状态机/翻译/TTS/缓存）。
+ * 模型 B 固定窗口切片识别源（P6 联调，2026-09-23 用户定义切分 + 槽位语义）。
  *
- * 置信度映射（2026-09-23 定稿策略）：Agent 无数值句子置信度，
- * needsConfirmation 布尔直接映射边界可靠性——true → UNCERTAIN（待核对+震动，
- * 管线既有路径），false → RELIABLE（正常收尾）。CV 侧词级不确定（非 OK 状态）
- * 不入句，仅触发重打提示（needs_repeat），不打扰、不震动。
+ * **槽位制（用户定稿）**：每个固定窗口 = 句内一个槽，节奏由窗口决定而非由
+ * CV 响应决定。槽的三种状态：PENDING（已切片待识别）→ FILLED（OK 候选组）
+ * 或 EMPTY（服务端拒识/HTTP 失败/积压丢弃——就地空出，不重排、不去重、
+ * 不作废整句）。草稿按槽序展示（空槽=＿，待识别=…）；「完成本句」把槽序
+ * 原样送 Agent（空槽=空候选组，保留位置信息）。
+ *
+ * 置信度映射（2026-09-23 定稿）：Agent 的 needsConfirmation 布尔直接映射
+ * 边界可靠性——true → UNCERTAIN（待核对+震动），false → RELIABLE；CV 侧
+ * 拒识仅触发重打提示（needs_repeat），不震动、不是待核实标志。
  */
 class ClipRecognitionSource(
     private val outputDir: File,
@@ -78,7 +82,7 @@ class ClipRecognitionSource(
     private val _statusText = MutableStateFlow<String?>(null)
     val statusText: StateFlow<String?> = _statusText.asStateFlow()
 
-    /** 词级拒绝（TOO_SHORT 等）→ VM 转发管线 reportNeedsRepeat()（重打提示，不震动） */
+    /** 服务端拒识（TOO_SHORT 等）→ VM 转发管线 reportNeedsRepeat()（重打提示，不震动） */
     private val _needsRepeat = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
     val needsRepeat: SharedFlow<Unit> = _needsRepeat
 
@@ -90,24 +94,28 @@ class ClipRecognitionSource(
     private var composeRevision = 0
     private var sessionId = ""
     private var currentSegmentId: String? = null
-    private var sentenceStartPtsUs = 0L
-    private var lastClipEndPtsUs = 0L
-    private val gestures = mutableListOf<CvResult>()
     private val lock = Mutex()
+
+    /** 句内槽位（时间序）；feed 回调/消费者协程/finishSentence 三处访问，锁保护 */
+    private class Slot(val startPtsUs: Long, val endPtsUs: Long) {
+        var pending = true
+        var empty = false
+        var result: CvResult? = null
+    }
+
+    private val slots = mutableListOf<Slot>()
+    private var pendingCount = 0
 
     @Volatile private var running = false
 
-    /**
-     * 待识别切片积压队列（有界）：识别速度跟不上切片速度（如服务端限流/
-     * 推理慢于窗口）时不允许无限排队——溢出的切片丢弃且**本句作废**
-     * （中间缺词的句子不可信），提示重打并建议加大窗口。
-     */
-    private data class PendingClip(val file: File, val startPtsUs: Long, val endPtsUs: Long)
+    private data class PendingClip(val file: File, val slot: Slot)
 
     private var clipQueue: Channel<PendingClip>? = null
     private var consumerJob: Job? = null
 
-    @Volatile private var sentenceBroken = false
+    /** 草稿文本保序通道（单消费者转发为 RecognitionUpdate） */
+    private var draftQueue: Channel<String> = Channel(Channel.UNLIMITED)
+    private var draftJob: Job? = null
 
     init {
         scope.launch {
@@ -125,8 +133,10 @@ class ClipRecognitionSource(
         sentenceSeq = 0
         composeRevision = 0
         currentSegmentId = null
-        gestures.clear()
-        sentenceBroken = false
+        synchronized(slots) {
+            slots.clear()
+            pendingCount = 0
+        }
         sessionId = UUID.randomUUID().toString()
         outputDir.mkdirs()
         outputDir.listFiles()?.forEach { it.delete() }
@@ -137,19 +147,20 @@ class ClipRecognitionSource(
         clipQueue = queue
         consumerJob = scope.launch {
             for (clip in queue) {
-                if (sentenceBroken) {
-                    sentenceBroken = false
-                    invalidateSentenceLocked("识别跟不上切片速度：本句已丢弃，请重打（可加大切片窗口）")
-                }
-                onClip(clip.file, clip.startPtsUs, clip.endPtsUs)
+                onClip(clip.file, clip.slot)
+            }
+        }
+        draftQueue = Channel(Channel.UNLIMITED)
+        draftJob = scope.launch {
+            for (text in draftQueue) {
+                val segId = currentSegmentId ?: continue
+                _updates.emit(
+                    RecognitionUpdate(sequenceEpoch = epoch, segmentId = segId, draftText = text),
+                )
             }
         }
         _statusText.value = feed.attach(outputDir, windowUs, scope) { file, startPtsUs, endPtsUs ->
-            val q = clipQueue
-            if (q == null || q.trySend(PendingClip(file, startPtsUs, endPtsUs)).isFailure) {
-                file.delete()
-                sentenceBroken = true
-            }
+            onWindow(file, startPtsUs, endPtsUs)
         }
     }
 
@@ -158,6 +169,9 @@ class ClipRecognitionSource(
         feed.detach()
         consumerJob?.cancel()
         consumerJob = null
+        draftQueue.close()
+        draftJob?.cancel()
+        draftJob = null
         // 清空积压切片文件（隐私：帧数据不滞留磁盘）
         val q = clipQueue
         clipQueue = null
@@ -168,36 +182,121 @@ class ClipRecognitionSource(
                 clip.file.delete()
             }
         }
-        gestures.clear()
+        synchronized(slots) {
+            slots.clear()
+            pendingCount = 0
+        }
         currentSegmentId = null
-        sentenceBroken = false
         _statusText.value = null
     }
 
-    /** 本句作废：清空已收候选并触发重打提示（调用方持锁或在消费者协程内） */
-    private suspend fun invalidateSentenceLocked(message: String) {
-        lock.withLock {
-            gestures.clear()
-            currentSegmentId = null
+    // ---------------------------------------------------------------- 槽位生命周期
+
+    /** 一个窗口封段 = 开一个槽；入队失败（积压满）= 该槽就地空出 */
+    private fun onWindow(file: File, startPtsUs: Long, endPtsUs: Long) {
+        val slot = Slot(startPtsUs, endPtsUs)
+        synchronized(slots) {
+            if (currentSegmentId == null) currentSegmentId = "clip-$epoch-${++sentenceSeq}"
+            slots += slot
         }
-        _statusText.value = message
-        _needsRepeat.emit(Unit)
+        emitDraft()
+        val q = clipQueue
+        if (q == null || q.trySend(PendingClip(file, slot)).isFailure) {
+            file.delete()
+            synchronized(slots) {
+                slot.pending = false
+                slot.empty = true
+            }
+            emitDraft()
+        } else {
+            synchronized(slots) { pendingCount++ }
+        }
     }
 
-    /** 用户「完成本句」：已收集候选送 Agent 组句，结果作为一个段更新进管线 */
+    private suspend fun onClip(file: File, slot: Slot) {
+        val bytes = runCatching { file.readBytes() }.getOrNull()
+        file.delete()
+        if (!running || bytes == null) {
+            fillEmpty(slot)
+            return
+        }
+        retainForDebug(bytes)
+        lock.withLock {
+            if (!running) {
+                fillEmpty(slot)
+                return
+            }
+            _statusText.value = "正在识别第 ${slotIndex(slot) + 1} 个槽…"
+            val result = try {
+                transport.recognize(bytes, tokens.cvToken)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                fillEmpty(slot)
+                _statusText.value = error.message ?: "识别请求失败"
+                return
+            }
+            if (!running) {
+                fillEmpty(slot)
+                return
+            }
+            if (result.status == "OK" && result.candidates.isNotEmpty()) {
+                synchronized(slots) {
+                    slot.pending = false
+                    slot.result = result
+                    pendingCount--
+                }
+                _statusText.value = "已填 ${filledCount()} 槽；打完点「完成本句」"
+            } else {
+                fillEmpty(slot)
+                // 服务端拒识 = 该槽空出 + 重打提示（非待核实、不震动）
+                _needsRepeat.emit(Unit)
+                _statusText.value = "第 ${slotIndex(slot) + 1} 槽空出：${result.status}" +
+                    "（${result.frames} 帧、手部 ${(result.anyHandFraction * 100).toInt()}%），该词请重打"
+            }
+            emitDraft()
+        }
+    }
+
+    private fun fillEmpty(slot: Slot) {
+        synchronized(slots) {
+            if (slot.pending) {
+                slot.pending = false
+                if (pendingCount > 0) pendingCount--
+            }
+            slot.empty = true
+        }
+        emitDraft()
+    }
+
+    /** 用户「完成本句」：等齐在途识别（上限 [FINISH_WAIT_MS]），槽序原样送 Agent */
     fun finishSentence() {
         if (!running) return
         scope.launch {
+            val deadline = System.currentTimeMillis() + FINISH_WAIT_MS
+            while (synchronized(slots) { pendingCount } > 0 && System.currentTimeMillis() < deadline) {
+                delay(100)
+            }
             lock.withLock {
-                if (gestures.isEmpty()) {
-                    _statusText.value = "本句还没有识别到词"
+                val snapshot = synchronized(slots) { slots.toList() }
+                if (snapshot.isEmpty()) {
+                    _statusText.value = "本句还没有槽位"
                     return@launch
+                }
+                val capped = if (snapshot.size > MAX_GESTURES) {
+                    _statusText.value = "槽位超过 $MAX_GESTURES，仅取前 $MAX_GESTURES 个组句"
+                    snapshot.take(MAX_GESTURES)
+                } else {
+                    snapshot
                 }
                 val segId = currentSegmentId ?: return@launch
                 val revision = ++composeRevision
                 _statusText.value = "正在补全句子…"
+                val gestures = capped.map { slot ->
+                    slot.result ?: CvResult("EMPTY", 0, 0.0, emptyList(), false)
+                }
                 val result = try {
-                    transport.compose(sessionId, segId, revision, gestures.toList(), tokens.agentToken)
+                    transport.compose(sessionId, segId, revision, gestures, tokens.agentToken)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
@@ -211,7 +310,8 @@ class ClipRecognitionSource(
                 }
                 val sentence = result.sentence
                 if (sentence == null) {
-                    _statusText.value = "未能确定句子：${result.status}；可继续补词或重打"
+                    // 槽位保留：可继续补槽或重试组句
+                    _statusText.value = "未能确定句子：${result.status}；可继续补槽或重试"
                     return@launch
                 }
                 _updates.emit(
@@ -220,11 +320,11 @@ class ClipRecognitionSource(
                         segmentId = segId,
                         draftText = sentence,
                         tokenSpans = listOf(
-                            TokenSpan(sentence, sentenceStartPtsUs, lastClipEndPtsUs, stable = true),
+                            TokenSpan(sentence, capped.first().startPtsUs, capped.last().endPtsUs, stable = true),
                         ),
                         confidence = null,   // Agent 无数值置信度，不伪造
                         boundary = BoundarySignal(
-                            cutoffPtsUs = lastClipEndPtsUs,
+                            cutoffPtsUs = capped.last().endPtsUs,
                             requiredFutureContextUs = 0,
                             reliability = if (result.needsConfirmation) {
                                 BoundaryReliability.UNCERTAIN
@@ -235,56 +335,36 @@ class ClipRecognitionSource(
                         ),
                     ),
                 )
-                gestures.clear()
+                synchronized(slots) {
+                    slots.clear()
+                    pendingCount = 0
+                }
                 currentSegmentId = null
                 _statusText.value = if (result.needsConfirmation) "组句待核对" else null
             }
         }
     }
 
-    // ---------------------------------------------------------------- 内部
+    // ---------------------------------------------------------------- 草稿与工具
 
-    private suspend fun onClip(file: File, startPtsUs: Long, endPtsUs: Long) {
-        val bytes = runCatching { file.readBytes() }.getOrNull()
-        file.delete()
-        if (!running || bytes == null) return
-        retainForDebug(bytes)
-        lock.withLock {
-            if (!running) return
-            _statusText.value = "正在识别第 ${gestures.size + 1} 个词…"
-            val result = try {
-                transport.recognize(bytes, tokens.cvToken)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                _statusText.value = error.message ?: "识别请求失败"
-                return
-            }
-            if (!running) return
-            if (result.status == "OK" && result.candidates.isNotEmpty()) {
-                if (gestures.isEmpty()) {
-                    sentenceStartPtsUs = startPtsUs
-                    currentSegmentId = "clip-$epoch-${++sentenceSeq}"
+    /** 槽序草稿：FILLED=top1 候选，EMPTY=＿，PENDING=…（重复不去重，用户定稿）。
+     经单消费者通道保序送达管线（多线程触发点：feed 回调/消费者/finish） */
+    private fun emitDraft() {
+        val text = synchronized(slots) {
+            slots.joinToString(" · ") { slot ->
+                when {
+                    slot.result != null -> slot.result!!.candidates.first().label
+                    slot.empty -> EMPTY_MARK
+                    else -> PENDING_MARK
                 }
-                lastClipEndPtsUs = endPtsUs
-                gestures += result
-                _updates.emit(
-                    RecognitionUpdate(
-                        sequenceEpoch = epoch,
-                        segmentId = currentSegmentId,
-                        draftText = gestures.joinToString(" · ") { it.candidates.first().label },
-                    ),
-                )
-                _statusText.value = "已收 ${gestures.size} 词；打完点「完成本句」"
-            } else {
-                _needsRepeat.emit(Unit)
-                // 带上帧数/手部帧占比：区分「切片坏了」（帧数异常少）与
-                // 「机位看不到手」（帧数正常但占比低）两类根因
-                _statusText.value = "该词未加入：${result.status}" +
-                    "（${result.frames} 帧、手部 ${(result.anyHandFraction * 100).toInt()}%），请重打"
             }
         }
+        if (text.isNotEmpty()) draftQueue.trySend(text)
     }
+
+    private fun slotIndex(slot: Slot): Int = synchronized(slots) { slots.indexOf(slot) }
+
+    private fun filledCount(): Int = synchronized(slots) { slots.count { it.result != null } }
 
     /** training 联调验尸：滚动保留最近 [MAX_RETAINED_CLIPS] 个已上传切片 */
     private fun retainForDebug(bytes: ByteArray) {
@@ -301,9 +381,17 @@ class ClipRecognitionSource(
         /** 切片窗口默认值（秒）；用户可在设置中定义，start 时读取 */
         const val DEFAULT_WINDOW_SECONDS = 2.0
 
-        /** 待识别积压上限（另有一段在识别中）；溢出即丢句重打，不无限排队 */
+        /** 待识别积压上限（另有一段在识别中）；溢出槽就地空出，不作废整句 */
         const val CLIP_BACKLOG_CAPACITY = 2
 
+        /** 单句槽位上限（Agent 契约 gestures ≤12） */
+        const val MAX_GESTURES = 12
+
+        /** 完成本句时等在途识别的上限 */
+        const val FINISH_WAIT_MS = 10_000L
+
+        private const val EMPTY_MARK = "＿"
+        private const val PENDING_MARK = "…"
         private const val MAX_RETAINED_CLIPS = 5
     }
 }

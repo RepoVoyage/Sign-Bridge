@@ -34,9 +34,10 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * 模型 B 固定窗口切片识别源验收（P6 联调，2026-09-23 用户流程）：
- * 词级候选累积草稿、拒绝词触发重打提示（不打扰不震动）、组句 needsConfirmation
- * 布尔直接映射边界可靠性（无数值置信度不伪造）、pts 账本、失败保留候选可重试。
+ * 模型 B 固定窗口切片识别源验收（槽位制，2026-09-23 用户定稿）：每窗口一槽，
+ * 拒识/失败/积压丢弃 = 空槽（＿）就地保留位置，不重排不去重不作废整句；
+ * 草稿按槽序展示；「完成本句」槽序原样送 Agent（空槽=空候选组）。
+ * needsConfirmation 布尔映射边界可靠性（待核对+震动 / 正常收尾）。
  */
 class ClipRecognitionSourceTest {
 
@@ -45,22 +46,27 @@ class ClipRecognitionSourceTest {
 
     private class FakeTransport : ClipTransport {
         val cvQueue = ArrayDeque<CvResult>()
-        val recognizedSizes = mutableListOf<Int>()
 
         /** 非 null 时 recognize 先在此挂起（模拟识别慢于切片速度的积压场景） */
         var gate: CompletableDeferred<Unit>? = null
+        @Volatile
         var composeSentence: String? = null
+        @Volatile
         var composeStatus = "OK"
+        @Volatile
         var composeNeedsConfirmation = false
-        var lastComposeSegmentId: String? = null
+        @Volatile
         var lastComposeRevision = -1
+        @Volatile
         var composeGestureCount = -1
+        @Volatile
+        var lastGestures: List<CvResult> = emptyList()
+        @Volatile
         var echoMismatch = false
 
         override suspend fun recognize(videoBytes: ByteArray, token: String): CvResult {
             assertEquals("cv-tok", token)
             gate?.await()
-            recognizedSizes += videoBytes.size
             return cvQueue.removeFirst()
         }
 
@@ -72,9 +78,9 @@ class ClipRecognitionSourceTest {
             token: String,
         ): ComposeResult {
             assertEquals("agent-tok", token)
-            lastComposeSegmentId = segmentId
             lastComposeRevision = revision
             composeGestureCount = gestures.size
+            lastGestures = gestures
             return ComposeResult(
                 sentence = composeSentence,
                 alternatives = emptyList(),
@@ -135,7 +141,7 @@ class ClipRecognitionSourceTest {
         )
         transport = FakeTransport()
         feed = FakeFeed()
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         cellularAcquired = 0
     }
 
@@ -197,38 +203,44 @@ class ClipRecognitionSourceTest {
     }
 
     @Test
-    fun `词候选累积为草稿；拒绝词触发重打提示且不入句`() = runBlocking {
+    fun `槽位制——候选填槽、拒识空槽、草稿保序展示`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
         waitUntil(10_000) { source.isAvailable }
-        val updates = mutableListOf<RecognitionUpdate>()
+        val updates = java.util.concurrent.CopyOnWriteArrayList<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
-        var repeats = 0
-        scope.launch { source.needsRepeat.collect { repeats++ } }
+        val repeats = java.util.concurrent.atomic.AtomicInteger()
+        scope.launch { source.needsRepeat.collect { repeats.incrementAndGet() } }
         source.start()
 
         transport.cvQueue += ok("我")
         feed.callback!!(clip("a.mp4", byteArrayOf(1, 2, 3)), 1_000_000, 3_000_000)
-        waitUntil { updates.isNotEmpty() }
-        assertEquals("我", updates.last().draftText)
-        assertNull(updates.last().boundary)
-        // 上传后切片文件即删（不滞留隐私数据）；训练留存目录保留验尸副本
+        waitUntil { updates.any { it.draftText == "我" } }
+        // 上传后切片文件即删；训练留存目录保留验尸副本
         waitUntil { !File(tmp.root, "a.mp4").exists() }
         assertEquals(1, File(tmp.root, "retain").listFiles()?.size)
 
         transport.cvQueue += CvResult("TOO_SHORT", 5, 0.1, emptyList(), false)
         feed.callback!!(clip("b.mp4", byteArrayOf(4)), 3_000_000, 5_000_000)
-        waitUntil { repeats == 1 }
-        assertEquals(1, updates.size)   // 拒绝词不产生段更新
-        assertTrue(source.statusText.value!!.contains("TOO_SHORT"))
+        waitUntil { repeats.get() == 1 }
+        waitUntil { updates.last().draftText == "我 · ＿" }   // 空槽保留位置
+        assertTrue(source.statusText.value!!.contains("槽空出"))
+
+        // 完成本句：空槽以空候选组原样送 Agent（位置不丢）
+        transport.composeSentence = "我想回家"
+        source.finishSentence()
+        waitUntil { transport.lastComposeRevision == 1 }
+        assertEquals(2, transport.composeGestureCount)
+        assertEquals(listOf("我"), transport.lastGestures[0].candidates.map { it.label })
+        assertTrue(transport.lastGestures[1].candidates.isEmpty())
     }
 
     @Test
-    fun `完成本句——needsConfirmation 映射 UNCERTAIN 边界，pts 账本取词段范围`() = runBlocking {
+    fun `完成本句——needsConfirmation 映射 UNCERTAIN 边界，pts 取首末槽范围`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
         waitUntil(10_000) { source.isAvailable }
-        val updates = mutableListOf<RecognitionUpdate>()
+        val updates = java.util.concurrent.CopyOnWriteArrayList<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
         source.start()
 
@@ -236,8 +248,7 @@ class ClipRecognitionSourceTest {
         feed.callback!!(clip("a.mp4", byteArrayOf(1)), 1_000_000, 3_000_000)
         transport.cvQueue += ok("回", "去")
         feed.callback!!(clip("b.mp4", byteArrayOf(2)), 3_000_000, 5_000_000)
-        waitUntil { updates.size == 2 }
-        assertEquals("我 · 回", updates.last().draftText)   // 草稿取各词 top-1
+        waitUntil { updates.any { it.draftText == "我 · 回" } }
 
         transport.composeSentence = "我想回家"
         transport.composeNeedsConfirmation = true
@@ -250,15 +261,13 @@ class ClipRecognitionSourceTest {
         assertNull(final.confidence)   // Agent 无数值置信度，不伪造
         assertEquals(1_000_000L, final.tokenSpans!!.first().startPtsUs)
         assertEquals(5_000_000L, boundary.cutoffPtsUs)
-        assertEquals(2, transport.composeGestureCount)
-        assertEquals("组句待核对", source.statusText.value)
+        waitUntil { source.statusText.value == "组句待核对" }
 
-        // 成功后清空：下一词开新段
+        // 成功后清槽：下一窗口开新句
         transport.cvQueue += ok("家")
         feed.callback!!(clip("c.mp4", byteArrayOf(3)), 6_000_000, 8_000_000)
-        waitUntil { updates.size == 4 }
-        assertEquals("家", updates.last().draftText)
-        assertFalse(updates.last().segmentId == final.segmentId)
+        waitUntil { updates.any { it.boundary == null && it.draftText == "家" } }
+        assertFalse(updates.last { it.boundary == null }.segmentId == final.segmentId)
     }
 
     @Test
@@ -266,67 +275,32 @@ class ClipRecognitionSourceTest {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
         waitUntil(10_000) { source.isAvailable }
-        val updates = mutableListOf<RecognitionUpdate>()
+        val updates = java.util.concurrent.CopyOnWriteArrayList<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
         source.start()
         transport.cvQueue += ok("我")
         feed.callback!!(clip("a.mp4", byteArrayOf(1)), 0, 2_000_000)
-        waitUntil { updates.size == 1 }
+        waitUntil { updates.any { it.draftText == "我" } }
         transport.composeSentence = "我想回家"
         transport.composeNeedsConfirmation = false
         source.finishSentence()
         waitUntil { updates.any { it.boundary != null } }
         assertEquals(BoundaryReliability.RELIABLE, updates.last().boundary!!.reliability)
-        assertNull(source.statusText.value)
+        waitUntil { source.statusText.value == null }
     }
 
     @Test
-    fun `组句失败（null 句子）保留候选可重试；回显不匹配拒绝结果`() = runBlocking {
+    fun `积压溢出——槽就地空出且整句不作废`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
         waitUntil(10_000) { source.isAvailable }
-        val updates = mutableListOf<RecognitionUpdate>()
+        val updates = java.util.concurrent.CopyOnWriteArrayList<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
-        source.start()
-        transport.cvQueue += ok("我")
-        feed.callback!!(clip("a.mp4", byteArrayOf(1)), 0, 2_000_000)
-        waitUntil { updates.size == 1 }
-
-        transport.composeSentence = null
-        transport.composeStatus = "NO_MATCH"
-        source.finishSentence()
-        waitUntil { source.statusText.value?.contains("NO_MATCH") == true }
-        assertTrue(updates.none { it.boundary != null })
-        assertEquals(1, transport.lastComposeRevision)
-
-        // 回显不匹配：拒绝，不产出更新
-        transport.composeSentence = "我想回家"
-        transport.echoMismatch = true
-        source.finishSentence()
-        waitUntil { source.statusText.value?.contains("不匹配") == true }
-        assertEquals(2, transport.lastComposeRevision)
-        assertTrue(updates.none { it.boundary != null })
-
-        // 恢复后重试成功：候选仍在（未因失败丢弃）
-        transport.echoMismatch = false
-        source.finishSentence()
-        waitUntil { updates.any { it.boundary != null } }
-        assertEquals("我想回家", updates.last().draftText)
-        assertEquals(3, transport.lastComposeRevision)
-    }
-
-    @Test
-    fun `积压超限——溢出切片丢弃且本句作废，提示重打`() = runBlocking {
-        settings.setRecognitionTokens("cv-tok", "agent-tok")
-        val source = newSource()
-        waitUntil(10_000) { source.isAvailable }
-        val updates = mutableListOf<RecognitionUpdate>()
-        scope.launch { source.updates.collect { updates += it } }
-        var repeats = 0
-        scope.launch { source.needsRepeat.collect { repeats++ } }
+        val repeats = java.util.concurrent.atomic.AtomicInteger()
+        scope.launch { source.needsRepeat.collect { repeats.incrementAndGet() } }
         source.start()
 
-        // 首段识别被 gate 挂起 = 消费停滞；积压 2 段后第 4 段溢出
+        // 首段识别挂起 = 消费停滞；积压 2 段后第 4 段溢出 → 槽 3 就地空出
         transport.gate = CompletableDeferred()
         transport.cvQueue += ok("我")
         transport.cvQueue += ok("回")
@@ -335,18 +309,52 @@ class ClipRecognitionSourceTest {
         feed.callback!!(clip("b.mp4", byteArrayOf(2)), 2_000_000, 4_000_000)
         feed.callback!!(clip("c.mp4", byteArrayOf(3)), 4_000_000, 6_000_000)
         feed.callback!!(clip("d.mp4", byteArrayOf(4)), 6_000_000, 8_000_000)
-        // 溢出切片即删（不滞留磁盘）
         assertFalse(File(tmp.root, "d.mp4").exists())
+        waitUntil { updates.any { it.draftText.endsWith("＿") } }   // 溢出槽立即空出
 
         transport.gate!!.complete(Unit)
-        waitUntil { updates.size == 3 }
-        // 溢出触发一次重打提示；"我"所在句被作废，b/c 以新段重开
-        assertEquals(1, repeats)
-        assertEquals("我", updates[0].draftText)
-        assertEquals("回", updates[1].draftText)
-        assertEquals("回 · 家", updates[2].draftText)
-        assertFalse(updates[1].segmentId == updates[0].segmentId)
-        assertEquals("已收 2 词；打完点「完成本句」", source.statusText.value)
+        waitUntil { updates.any { it.draftText == "我 · 回 · 家 · ＿" } }
+        assertEquals(0, repeats.get())   // 溢出是静默空槽，不触发重打提示
+
+        transport.composeSentence = "我回家"
+        source.finishSentence()
+        waitUntil { transport.lastComposeRevision == 1 }
+        assertEquals(4, transport.composeGestureCount)   // 空槽占位，位置不丢
+        assertTrue(transport.lastGestures[3].candidates.isEmpty())
+    }
+
+    @Test
+    fun `组句失败（null 句子）保留槽位可重试；回显不匹配拒绝结果`() = runBlocking {
+        settings.setRecognitionTokens("cv-tok", "agent-tok")
+        val source = newSource()
+        waitUntil(10_000) { source.isAvailable }
+        val updates = java.util.concurrent.CopyOnWriteArrayList<RecognitionUpdate>()
+        scope.launch { source.updates.collect { updates += it } }
+        source.start()
+        transport.cvQueue += ok("我")
+        feed.callback!!(clip("a.mp4", byteArrayOf(1)), 0, 2_000_000)
+        waitUntil { updates.any { it.draftText == "我" } }
+
+        transport.composeSentence = null
+        transport.composeStatus = "NO_MATCH"
+        source.finishSentence()
+        waitUntil { source.statusText.value?.contains("NO_MATCH") == true }
+        assertTrue(updates.none { it.boundary != null })
+        assertEquals(1, transport.lastComposeRevision)
+
+        transport.composeSentence = "我想回家"
+        transport.echoMismatch = true
+        source.finishSentence()
+        waitUntil { source.statusText.value?.contains("不匹配") == true }
+        assertEquals(2, transport.lastComposeRevision)
+        assertTrue(updates.none { it.boundary != null })
+
+        // 恢复后重试成功：槽位仍在（未因失败清空）
+        transport.echoMismatch = false
+        source.finishSentence()
+        waitUntil { updates.any { it.boundary != null } }
+        assertEquals("我想回家", updates.last().draftText)
+        assertEquals(3, transport.lastComposeRevision)
     }
 
     @Test
