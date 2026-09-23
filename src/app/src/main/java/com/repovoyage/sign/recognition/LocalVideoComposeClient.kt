@@ -26,8 +26,9 @@ class LocalVideoComposeClient(private val clientProvider: () -> OkHttpClient = {
         token: String,
     ): ComposeResult = withContext(Dispatchers.IO) {
         require(token.isNotBlank()) { "请填写 Agent 服务令牌" }
+        // 契约：gestures 1–12 项，每项 candidates 1–3 条（空槽不上线，调用方过滤）
         require(gestures.isNotEmpty() && gestures.size <= 12)
-        // 空候选组 = 槽位制下的空槽（拒识/失败窗口保留位置），服务端按位置语义消费
+        require(gestures.all { it.candidates.isNotEmpty() && it.candidates.size <= 3 })
         val request = Request.Builder()
             .url(COMPOSE_URL)
             .header("Authorization", "Bearer ${token.trim()}")

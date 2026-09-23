@@ -283,18 +283,23 @@ class ClipRecognitionSource(
                     _statusText.value = "本句还没有槽位"
                     return@launch
                 }
-                val capped = if (snapshot.size > MAX_GESTURES) {
-                    _statusText.value = "槽位超过 $MAX_GESTURES，仅取前 $MAX_GESTURES 个组句"
-                    snapshot.take(MAX_GESTURES)
+                // 契约：gestures 每项 candidates 须 1–3 条——空槽（拒识/失败/
+                // 丢弃）不上线，仅 App 侧时间轴保留位置；发 FILLED 槽的时间序
+                val filled = snapshot.filter { it.result != null }
+                if (filled.isEmpty()) {
+                    _statusText.value = "本句全为空槽，无候选可组句"
+                    return@launch
+                }
+                val capped = if (filled.size > MAX_GESTURES) {
+                    _statusText.value = "候选槽超过 $MAX_GESTURES，仅取前 $MAX_GESTURES 个组句"
+                    filled.take(MAX_GESTURES)
                 } else {
-                    snapshot
+                    filled
                 }
                 val segId = currentSegmentId ?: return@launch
                 val revision = ++composeRevision
                 _statusText.value = "正在补全句子…"
-                val gestures = capped.map { slot ->
-                    slot.result ?: CvResult("EMPTY", 0, 0.0, emptyList(), false)
-                }
+                val gestures = capped.map { it.result!! }
                 val result = try {
                     transport.compose(sessionId, segId, revision, gestures, tokens.agentToken)
                 } catch (cancelled: CancellationException) {

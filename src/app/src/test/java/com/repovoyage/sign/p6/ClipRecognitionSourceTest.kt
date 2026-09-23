@@ -226,13 +226,12 @@ class ClipRecognitionSourceTest {
         waitUntil { updates.last().draftText == "我 · ＿" }   // 空槽保留位置
         assertTrue(source.statusText.value!!.contains("槽空出"))
 
-        // 完成本句：空槽以空候选组原样送 Agent（位置不丢）
+        // 完成本句：契约要求每项 candidates 1–3 条——空槽不上线，仅发 FILLED 槽
         transport.composeSentence = "我想回家"
         source.finishSentence()
         waitUntil { transport.lastComposeRevision == 1 }
-        assertEquals(2, transport.composeGestureCount)
+        assertEquals(1, transport.composeGestureCount)
         assertEquals(listOf("我"), transport.lastGestures[0].candidates.map { it.label })
-        assertTrue(transport.lastGestures[1].candidates.isEmpty())
     }
 
     @Test
@@ -319,8 +318,8 @@ class ClipRecognitionSourceTest {
         transport.composeSentence = "我回家"
         source.finishSentence()
         waitUntil { transport.lastComposeRevision == 1 }
-        assertEquals(4, transport.composeGestureCount)   // 空槽占位，位置不丢
-        assertTrue(transport.lastGestures[3].candidates.isEmpty())
+        assertEquals(3, transport.composeGestureCount)   // 空槽不上线
+        assertEquals(listOf("我", "回", "家"), transport.lastGestures.map { it.candidates.first().label })
     }
 
     @Test
@@ -355,6 +354,20 @@ class ClipRecognitionSourceTest {
         waitUntil { updates.any { it.boundary != null } }
         assertEquals("我想回家", updates.last().draftText)
         assertEquals(3, transport.lastComposeRevision)
+    }
+
+    @Test
+    fun `全空槽不调 compose（契约 gestures 每项须 1-3 候选）`() = runBlocking {
+        settings.setRecognitionTokens("cv-tok", "agent-tok")
+        val source = newSource()
+        waitUntil(10_000) { source.isAvailable }
+        source.start()
+        transport.cvQueue += CvResult("TOO_SHORT", 5, 0.1, emptyList(), false)
+        feed.callback!!(clip("a.mp4", byteArrayOf(1)), 0, 2_000_000)
+        waitUntil { source.statusText.value?.contains("槽空出") == true }
+        source.finishSentence()
+        waitUntil { source.statusText.value == "本句全为空槽，无候选可组句" }
+        assertEquals(-1, transport.lastComposeRevision)   // 未发起 compose
     }
 
     @Test
