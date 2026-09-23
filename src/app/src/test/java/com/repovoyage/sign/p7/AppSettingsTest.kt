@@ -107,6 +107,19 @@ class AppSettingsTest {
     }
 
     @Test
+    fun `对话重命名持久化且空名删除`() = runBlocking {
+        assertTrue(settings.conversationNames.first().isEmpty())
+        settings.renameConversation("k1", " 晨间对话 ")
+        settings.renameConversation("k2", "下午")
+        val names = settings.conversationNames.first()
+        assertEquals("晨间对话", names["k1"])     // trim 生效
+        assertEquals("下午", names["k2"])
+        settings.renameConversation("k1", "   ")
+        assertEquals(null, settings.conversationNames.first()["k1"])   // 空名 = 移除
+        assertEquals("下午", settings.conversationNames.first()["k2"])
+    }
+
+    @Test
     fun `识别模型选择持久化且不影响语言处理版本号`() = runBlocking {
         assertEquals(null, settings.selectedModelId.first())
         settings.setSelectedModelId("model-b")

@@ -111,6 +111,33 @@ class AppSettings(private val store: DataStore<Preferences>) {
         }
     }
 
+    // ---------------------------------------------------------------- 历史对话重命名
+
+    /**
+     * 对话重命名（2026-09-23 用户需求）：key = 分组键（sessionId 或组起始
+     * 墙钟毫秒字符串），value = 用户自定义名；未命名的对话默认显示起始时间。
+     * 以 JSON 对象存于单个 preference（org.json 运行时可用）。
+     */
+    val conversationNames: Flow<Map<String, String>> = store.data.map { prefs ->
+        val raw = prefs[KEY_CONVERSATION_NAMES] ?: return@map emptyMap()
+        runCatching {
+            val obj = org.json.JSONObject(raw)
+            buildMap {
+                obj.keys().forEach { k -> put(k, obj.getString(k)) }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    suspend fun renameConversation(key: String, name: String) {
+        store.edit { prefs ->
+            val obj = runCatching {
+                org.json.JSONObject(prefs[KEY_CONVERSATION_NAMES] ?: "{}")
+            }.getOrDefault(org.json.JSONObject())
+            if (name.isBlank()) obj.remove(key) else obj.put(key, name.trim())
+            prefs[KEY_CONVERSATION_NAMES] = obj.toString()
+        }
+    }
+
     // ---------------------------------------------------------------- LLM 凭据（§6.3）
 
     val llmBaseUrl: Flow<String> = store.data.map { it[KEY_LLM_BASE_URL] ?: "" }
@@ -141,6 +168,7 @@ class AppSettings(private val store: DataStore<Preferences>) {
         private val KEY_TTS_ENABLED = booleanPreferencesKey("tts_enabled")
         private val KEY_SETTINGS_REVISION = longPreferencesKey("settings_revision")
         private val KEY_SELECTED_MODEL_ID = stringPreferencesKey("selected_model_id")
+        private val KEY_CONVERSATION_NAMES = stringPreferencesKey("conversation_names")
         private val KEY_LLM_BASE_URL = stringPreferencesKey("llm_base_url")
         private val KEY_LLM_API_KEY = stringPreferencesKey("llm_api_key")
         private val KEY_LLM_MODEL = stringPreferencesKey("llm_model")

@@ -43,10 +43,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val llmCredentials: StateFlow<LlmCredentials> =
         settings.llmCredentials.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LlmCredentials("", "", ""))
 
-    /** 模型目录 + 安装状态（filesDir/models 约定路径） */
-    val modelEntries = ModelCatalog.ENTRIES.map { entry ->
-        entry to ModelCatalog.isInstalled(app, entry)
-    }
+    /** 模型目录（两模型均云端部署，按拍摄视角选择） */
+    val modelEntries = ModelCatalog.ENTRIES
 
     // 凭据编辑草稿（保存才写入）
     val urlDraft = MutableStateFlow("")

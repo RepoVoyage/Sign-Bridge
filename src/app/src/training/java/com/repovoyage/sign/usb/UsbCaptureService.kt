@@ -141,7 +141,7 @@ class UsbCaptureService : Service() {
 
     private fun baseNotification(): NotificationCompat.Builder =
         NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
 
     private fun startInForeground() {

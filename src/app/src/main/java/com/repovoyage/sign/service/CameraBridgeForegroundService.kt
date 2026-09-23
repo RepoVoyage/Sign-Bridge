@@ -75,7 +75,7 @@ class CameraBridgeForegroundService : Service() {
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.camera_service_notification_title))
             .setContentText(contentText)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .build()
 

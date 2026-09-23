@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">手语翻译</string>
+    <string name="app_name">语桥</string>
     <string name="scaffold_placeholder">工程骨架就绪（P1）\n相机连接模块开发中</string>
     <string name="camera_service_channel_name">相机连接</string>
-    <string name="camera_service_notification_title">手语翻译运行中</string>
+    <string name="camera_service_notification_title">语桥运行中</string>
     <string name="camera_service_notification_text">正在保持与相机的连接</string>
     <string name="state_idle_hint">状态：未启动</string>
     <string name="state_format">状态：%1$s</string>
@@ -29,6 +29,8 @@
     <string name="nav_settings">设置</string>
     <string name="nav_history">历史</string>
     <string name="nav_back">返回</string>
+    <string name="tab_main">翻译</string>
+    <string name="state_live_badge">取流中</string>
     <string name="translation_start">开始翻译</string>
     <string name="translation_stop">停止翻译</string>
     <string name="translation_source_unavailable">识别模型未就绪——连续翻译暂不可用</string>
@@ -53,9 +55,7 @@
     <string name="settings_spoken_hint">必须属于字幕语言；缺离线语音的语言仅显示字幕</string>
     <string name="settings_tts_switch">语音播报</string>
     <string name="settings_model_title">识别模型</string>
-    <string name="settings_model_hint">推理接入（P6）后生效；未安装的模型不可选</string>
-    <string name="model_installed">已安装</string>
-    <string name="model_not_installed">未安装</string>
+    <string name="settings_model_hint">两模型均部署云端，按拍摄视角选择；识别接线（P6）后生效</string>
     <string name="settings_cache_title">文本缓存</string>
     <string name="settings_cache_switch">保存文本历史</string>
     <string name="settings_cache_desc">在本机保存已确认文本与语言结果，保留最近 90 天且不超过 10000 条，超限自动清理。关闭后停止写入新记录，已存记录可在历史页删除。</string>
@@ -75,14 +75,18 @@
 
     <string name="history_title">历史</string>
     <string name="history_empty">暂无记录</string>
+    <string name="history_group_session">按会话分组</string>
+    <string name="history_group_time">按时间分组</string>
+    <string name="history_group_count">%1$d 句</string>
+    <string name="history_rename">重命名</string>
+    <string name="history_rename_title">对话名称</string>
+    <string name="history_delete_group">删除本段</string>
+    <string name="history_delete_group_confirm">删除这段对话的全部记录？此操作不可撤销。</string>
     <string name="history_export_json">导出 JSON</string>
     <string name="history_export_csv">导出 CSV</string>
     <string name="history_delete_all">全部删除</string>
     <string name="history_delete_all_confirm">删除全部历史记录？此操作不可撤销。</string>
-    <string name="history_delete_session">删除本会话</string>
-    <string name="history_delete_session_confirm">删除该会话的全部记录？此操作不可撤销。</string>
     <string name="history_delete_entry">删除本句</string>
-    <string name="history_session_header">会话 %1$s（%2$d 句）</string>
     <string name="export_chooser_title">导出缓存文件</string>
     <string name="export_receiver_notice">导出后的文件由接收方管理</string>
     <string name="action_cancel">取消</string>

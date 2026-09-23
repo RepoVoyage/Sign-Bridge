@@ -9,15 +9,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,30 +33,35 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.repovoyage.sign.R
+import com.repovoyage.sign.history.ConversationGroup
+import com.repovoyage.sign.history.GroupMode
 import com.repovoyage.sign.history.SentenceWithResults
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 
-/** 待确认的破坏性动作（会话级/全部删除需确认；单句删除即点即删） */
+/** 待确认的破坏性动作（对话级/全部删除需确认；单句删除即点即删） */
 private sealed interface PendingDelete {
-    data class Session(val sessionId: String) : PendingDelete
+    data class Group(val group: ConversationGroup) : PendingDelete
     data object All : PendingDelete
 }
 
-/** 历史界面：按会话分组（新→旧），三级删除 + JSON/CSV 导出分享 */
-@OptIn(ExperimentalMaterial3Api::class)
+/** 待重命名的对话（对话框内编辑草稿） */
+private data class PendingRename(val group: ConversationGroup, val current: String)
+
+/**
+ * 历史内容（§2.6 + 2026-09-23 用户需求）：分组方式可选 按会话/按时间
+ * （30 分钟切分对话）；对话可重命名（默认名=起始时间）；三级删除 + 导出。
+ */
 @Composable
-fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
-    val history by vm.history.collectAsStateWithLifecycle()
+fun HistoryScreen(vm: HistoryViewModel) {
+    val groups by vm.groups.collectAsStateWithLifecycle()
+    val names by vm.conversationNames.collectAsStateWithLifecycle()
+    val mode by vm.groupMode.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var pendingDelete by remember { mutableStateOf<PendingDelete?>(null) }
-
-    // 保持缓存观察流的降序语义：会话按最近句排序，组内新→旧
-    val grouped = remember(history) {
-        history.groupBy { it.sentence.sessionId }
-    }
+    var pendingRename by remember { mutableStateOf<PendingRename?>(null) }
 
     fun export(json: Boolean) {
         scope.launch {
@@ -68,71 +74,68 @@ fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.history_title)) },
-                navigationIcon = {
-                    TextButton(onClick = onBack) { Text(stringResource(R.string.nav_back)) }
-                },
-            )
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { export(json = true) }) {
-                    Text(stringResource(R.string.history_export_json))
-                }
-                OutlinedButton(onClick = { export(json = false) }) {
-                    Text(stringResource(R.string.history_export_csv))
-                }
-                OutlinedButton(
-                    onClick = { pendingDelete = PendingDelete.All },
-                    enabled = history.isNotEmpty(),
-                ) {
-                    Text(stringResource(R.string.history_delete_all))
-                }
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(onClick = { export(json = true) }) {
+                Text(stringResource(R.string.history_export_json))
             }
-            Text(
-                stringResource(R.string.export_receiver_notice),
-                style = MaterialTheme.typography.labelSmall,
-            )
+            FilledTonalButton(onClick = { export(json = false) }) {
+                Text(stringResource(R.string.history_export_csv))
+            }
+            FilledTonalButton(
+                onClick = { pendingDelete = PendingDelete.All },
+                enabled = groups.any { it.entries.isNotEmpty() },
+            ) {
+                Text(stringResource(R.string.history_delete_all))
+            }
+        }
 
-            if (history.isEmpty()) {
-                Text(
-                    stringResource(R.string.history_empty),
-                    modifier = Modifier.padding(top = 32.dp).fillMaxWidth(),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    grouped.forEach { (sessionId, entries) ->
-                        item(key = "session-$sessionId") {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    stringResource(
-                                        R.string.history_session_header,
-                                        sessionId.take(8), entries.size,
-                                    ),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                TextButton(onClick = { pendingDelete = PendingDelete.Session(sessionId) }) {
-                                    Text(stringResource(R.string.history_delete_session))
-                                }
-                            }
-                        }
-                        items(entries, key = { it.sentence.sessionId + "|" + it.sentence.segmentId }) { entry ->
-                            HistoryEntryCard(entry, onDelete = {
-                                vm.deleteSegment(entry.sentence.sessionId, entry.sentence.segmentId)
-                            })
-                        }
+        // 分组方式（用户需求的"按时间算同一段对话"选项）
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = mode == GroupMode.SESSION,
+                onClick = { vm.setGroupMode(GroupMode.SESSION) },
+                label = { Text(stringResource(R.string.history_group_session)) },
+            )
+            FilterChip(
+                selected = mode == GroupMode.TIME_GAP,
+                onClick = { vm.setGroupMode(GroupMode.TIME_GAP) },
+                label = { Text(stringResource(R.string.history_group_time)) },
+            )
+        }
+        Text(
+            stringResource(R.string.export_receiver_notice),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (groups.isEmpty()) {
+            Text(
+                stringResource(R.string.history_empty),
+                modifier = Modifier.padding(top = 32.dp).fillMaxWidth(),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                groups.forEach { group ->
+                    item(key = "group-${mode.name}-${group.key}") {
+                        GroupHeader(
+                            name = vm.displayName(group, names),
+                            count = group.entries.size,
+                            onRename = {
+                                pendingRename = PendingRename(group, vm.displayName(group, names))
+                            },
+                            onDelete = { pendingDelete = PendingDelete.Group(group) },
+                        )
+                    }
+                    items(group.entries, key = { it.sentence.sessionId + "|" + it.sentence.segmentId }) { entry ->
+                        HistoryEntryCard(entry, onDelete = {
+                            vm.deleteSegment(entry.sentence.sessionId, entry.sentence.segmentId)
+                        })
                     }
                 }
             }
@@ -140,13 +143,13 @@ fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
     }
 
     when (val pending = pendingDelete) {
-        is PendingDelete.Session -> AlertDialog(
+        is PendingDelete.Group -> AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text(stringResource(R.string.history_delete_session)) },
-            text = { Text(stringResource(R.string.history_delete_session_confirm)) },
+            title = { Text(stringResource(R.string.history_delete_group)) },
+            text = { Text(stringResource(R.string.history_delete_group_confirm)) },
             confirmButton = {
                 TextButton(onClick = {
-                    vm.deleteSession(pending.sessionId)
+                    vm.deleteGroup(pending.group)
                     pendingDelete = null
                 }) { Text(stringResource(R.string.action_delete)) }
             },
@@ -170,18 +173,87 @@ fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
         )
         null -> Unit
     }
+
+    pendingRename?.let { pending ->
+        RenameDialog(
+            initial = pending.current,
+            onDismiss = { pendingRename = null },
+            onSave = { name ->
+                vm.rename(pending.group.key, name)
+                pendingRename = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun GroupHeader(
+    name: String,
+    count: Int,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(name, style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
+            Text(
+                stringResource(R.string.history_group_count, count),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(onClick = onRename) { Text(stringResource(R.string.history_rename)) }
+        TextButton(onClick = onDelete) { Text(stringResource(R.string.history_delete_group)) }
+    }
+}
+
+@Composable
+private fun RenameDialog(
+    initial: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.history_rename_title)) },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text) }) { Text(stringResource(R.string.action_save)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
 }
 
 @Composable
 private fun HistoryEntryCard(entry: SentenceWithResults, onDelete: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(entry.sentence.rawChinese, fontWeight = FontWeight.Bold)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(entry.sentence.rawChinese, style = YuqiaoType.subtitle, fontWeight = FontWeight.Bold)
                     Text(
                         DateFormat.getDateTimeInstance().format(Date(entry.sentence.wallTimeStart)),
                         style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 TextButton(onClick = onDelete) { Text(stringResource(R.string.history_delete_entry)) }

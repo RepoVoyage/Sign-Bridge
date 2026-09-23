@@ -7,16 +7,24 @@ import androidx.lifecycle.viewModelScope
 import com.repovoyage.sign.R
 import com.repovoyage.sign.SignApp
 import com.repovoyage.sign.history.CacheExporter
+import com.repovoyage.sign.history.ConversationGroup
+import com.repovoyage.sign.history.GroupMode
 import com.repovoyage.sign.history.SentenceWithResults
+import com.repovoyage.sign.history.groupConversations
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 
 /**
- * 历史界面 VM（§2.6）：观察缓存全量历史；按句/按会话/全部删除；
- * 导出 = 用户主动触发 → 系统分享机制（不常驻公共目录）。
+ * 历史界面 VM（§2.6）：观察缓存全量历史；分组方式可选 按会话 / 按时间间隔
+ * （30 分钟切分，2026-09-23 用户需求）；对话可重命名（默认名=起始时间）；
+ * 三级删除 + JSON/CSV 导出分享。
  */
 class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -27,12 +35,36 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         signApp.sentenceCache.observeHistory()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val groupMode = MutableStateFlow(GroupMode.SESSION)
+
+    fun setGroupMode(mode: GroupMode) {
+        groupMode.value = mode
+    }
+
+    /** 分组结果（显示名经 [displayName] 解析：重命名优先，默认起始时间） */
+    val groups: StateFlow<List<ConversationGroup>> =
+        combine(history, groupMode) { entries, mode -> groupConversations(entries, mode) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val conversationNames: StateFlow<Map<String, String>> =
+        signApp.settings.conversationNames
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /** 对话显示名：重命名优先，默认起始时间 */
+    fun displayName(group: ConversationGroup, names: Map<String, String>): String =
+        names[group.key] ?: DateFormat.getDateTimeInstance().format(Date(group.startMs))
+
+    fun rename(key: String, name: String) = viewModelScope.launch {
+        signApp.settings.renameConversation(key, name)
+    }
+
     fun deleteSegment(sessionId: String, segmentId: String) = viewModelScope.launch {
         signApp.sentenceCache.deleteBySegment(sessionId, segmentId)
     }
 
-    fun deleteSession(sessionId: String) = viewModelScope.launch {
-        signApp.sentenceCache.deleteBySession(sessionId)
+    /** 删除整组对话（时间分组可能跨多个会话） */
+    fun deleteGroup(group: ConversationGroup) = viewModelScope.launch {
+        group.sessionIds.forEach { signApp.sentenceCache.deleteBySession(it) }
     }
 
     fun deleteAll() = viewModelScope.launch {
