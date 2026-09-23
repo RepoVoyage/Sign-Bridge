@@ -7,24 +7,29 @@ import androidx.lifecycle.viewModelScope
 import com.repovoyage.sign.R
 import com.repovoyage.sign.SignApp
 import com.repovoyage.sign.history.CacheExporter
-import com.repovoyage.sign.history.ConversationGroup
-import com.repovoyage.sign.history.GroupMode
 import com.repovoyage.sign.history.SentenceWithResults
-import com.repovoyage.sign.history.groupConversations
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
+/** 历史对话组（按会话分组；key=sessionId，亦为重命名持久化键） */
+data class ConversationGroup(
+    val key: String,
+    val startMs: Long,
+    val sessionId: String,
+    val entries: List<SentenceWithResults>,   // 组内新→旧
+)
+
 /**
- * 历史界面 VM（§2.6）：观察缓存全量历史；分组方式可选 按会话 / 按时间间隔
- * （30 分钟切分，2026-09-23 用户需求）；对话可重命名（默认名=起始时间）；
- * 三级删除 + JSON/CSV 导出分享。
+ * 历史界面 VM（§2.6）：观察缓存全量历史，按会话分组；对话可重命名
+ * （默认名=起始时间，2026-09-23 用户需求；按时间归并选项同日经用户
+ * 决定移除，仅保留按会话）；三级删除 + JSON/CSV 导出分享。
  */
 class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -35,16 +40,19 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         signApp.sentenceCache.observeHistory()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val groupMode = MutableStateFlow(GroupMode.SESSION)
-
-    fun setGroupMode(mode: GroupMode) {
-        groupMode.value = mode
-    }
-
     /** 分组结果（显示名经 [displayName] 解析：重命名优先，默认起始时间） */
-    val groups: StateFlow<List<ConversationGroup>> =
-        combine(history, groupMode) { entries, mode -> groupConversations(entries, mode) }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val groups: StateFlow<List<ConversationGroup>> = history
+        .map { entries ->
+            entries.groupBy { it.sentence.sessionId }.map { (sessionId, list) ->
+                ConversationGroup(
+                    key = sessionId,
+                    startMs = list.last().sentence.wallTimeStart,
+                    sessionId = sessionId,
+                    entries = list,
+                )
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val conversationNames: StateFlow<Map<String, String>> =
         signApp.settings.conversationNames
@@ -62,9 +70,8 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         signApp.sentenceCache.deleteBySegment(sessionId, segmentId)
     }
 
-    /** 删除整组对话（时间分组可能跨多个会话） */
     fun deleteGroup(group: ConversationGroup) = viewModelScope.launch {
-        group.sessionIds.forEach { signApp.sentenceCache.deleteBySession(it) }
+        signApp.sentenceCache.deleteBySession(group.sessionId)
     }
 
     fun deleteAll() = viewModelScope.launch {

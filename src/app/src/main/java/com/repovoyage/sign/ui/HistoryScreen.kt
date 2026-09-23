@@ -14,7 +14,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -33,8 +32,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.repovoyage.sign.R
-import com.repovoyage.sign.history.ConversationGroup
-import com.repovoyage.sign.history.GroupMode
 import com.repovoyage.sign.history.SentenceWithResults
 import kotlinx.coroutines.launch
 import java.text.DateFormat
@@ -57,7 +54,6 @@ private data class PendingRename(val group: ConversationGroup, val current: Stri
 fun HistoryScreen(vm: HistoryViewModel) {
     val groups by vm.groups.collectAsStateWithLifecycle()
     val names by vm.conversationNames.collectAsStateWithLifecycle()
-    val mode by vm.groupMode.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var pendingDelete by remember { mutableStateOf<PendingDelete?>(null) }
@@ -93,19 +89,6 @@ fun HistoryScreen(vm: HistoryViewModel) {
             }
         }
 
-        // 分组方式（用户需求的"按时间算同一段对话"选项）
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = mode == GroupMode.SESSION,
-                onClick = { vm.setGroupMode(GroupMode.SESSION) },
-                label = { Text(stringResource(R.string.history_group_session)) },
-            )
-            FilterChip(
-                selected = mode == GroupMode.TIME_GAP,
-                onClick = { vm.setGroupMode(GroupMode.TIME_GAP) },
-                label = { Text(stringResource(R.string.history_group_time)) },
-            )
-        }
         Text(
             stringResource(R.string.export_receiver_notice),
             style = MaterialTheme.typography.labelSmall,
@@ -122,7 +105,7 @@ fun HistoryScreen(vm: HistoryViewModel) {
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 groups.forEach { group ->
-                    item(key = "group-${mode.name}-${group.key}") {
+                    item(key = "group-${group.key}") {
                         GroupHeader(
                             name = vm.displayName(group, names),
                             count = group.entries.size,

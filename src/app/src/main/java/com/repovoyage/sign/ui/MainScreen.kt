@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.repovoyage.sign.R
@@ -107,12 +108,20 @@ fun MainScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (devices.isNotEmpty()) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // 竖排全宽：长设备名不挤压换行（横排 Row 会把芯片挤成竖条）
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         devices.forEachIndexed { index, device ->
                             FilterChip(
                                 selected = false,
                                 onClick = { vm.connect(device) },
-                                label = { Text(vm.deviceLabel(device, index)) },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = {
+                                    Text(
+                                        vm.deviceLabel(device, index),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                },
                             )
                         }
                     }

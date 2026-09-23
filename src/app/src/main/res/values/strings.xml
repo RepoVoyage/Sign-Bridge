@@ -75,8 +75,6 @@
 
     <string name="history_title">历史</string>
     <string name="history_empty">暂无记录</string>
-    <string name="history_group_session">按会话分组</string>
-    <string name="history_group_time">按时间分组</string>
     <string name="history_group_count">%1$d 句</string>
     <string name="history_rename">重命名</string>
     <string name="history_rename_title">对话名称</string>
