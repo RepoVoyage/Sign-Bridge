@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
 }
 
@@ -45,6 +46,16 @@ android {
             )
         }
     }
+    buildFeatures {
+        compose = true
+    }
+    lint {
+        // AGP 8.7.3 自带 lint 与 Kotlin 2.3.20 K2 分析 API 不兼容：分析 Activity
+        // 类文件即崩（KaCallableMemberCall class/interface 不匹配，lint 自身 bug）。
+        // AGP 版本按 §3.2 锁定不升，故关闭 release lintVital 门禁；发布验收（P8）
+        // 以人工评审补偿，AGP 升级后应恢复此门禁。
+        checkReleaseBuilds = false
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -70,6 +81,14 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.datastore.preferences)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    debugImplementation(libs.compose.ui.tooling)
     testImplementation(libs.junit)
     // 单测用真实 org.json（android.jar stub 不可执行）；测试 classpath 优先，不影响运行时
     testImplementation("org.json:json:20240303")

@@ -24,4 +24,65 @@
     <string name="permission_denied_hint">需要蓝牙权限才能扫描相机，请到系统设置授权</string>
     <string name="stream_stats_format">取流 gen%1$d｜帧 %2$d（I %5$d）｜%3$.1f fps｜%4$.1f MiB</string>
     <string name="decode_stats_format">解码 gen%1$d｜%2$d 帧｜%3$.1f fps｜%4$dx%5$d</string>
+
+    <!-- P7 字幕/设置/历史 UI -->
+    <string name="nav_settings">设置</string>
+    <string name="nav_history">历史</string>
+    <string name="nav_back">返回</string>
+    <string name="translation_start">开始翻译</string>
+    <string name="translation_stop">停止翻译</string>
+    <string name="translation_source_unavailable">识别模型未就绪——连续翻译暂不可用</string>
+    <string name="draft_prefix">正在识别…</string>
+    <string name="pending_confirm_title">待核对</string>
+    <string name="pending_confirm_reason">原因：%1$s</string>
+    <string name="action_discard">放弃</string>
+    <string name="unspoken_marker">未播报</string>
+    <string name="action_replay">重播</string>
+    <string name="result_unavailable">不可用</string>
+    <string name="result_needs_confirmation">待核对</string>
+
+    <string name="settings_title">设置</string>
+    <string name="settings_languages_title">字幕语言</string>
+    <string name="settings_languages_hint">选择顺序即处理优先级；至少保留一种</string>
+    <string name="settings_spoken_title">语音语言</string>
+    <string name="settings_spoken_hint">必须属于字幕语言；缺离线语音的语言仅显示字幕</string>
+    <string name="settings_tts_switch">语音播报</string>
+    <string name="settings_model_title">识别模型</string>
+    <string name="settings_model_hint">推理接入（P6）后生效；未安装的模型不可选</string>
+    <string name="model_installed">已安装</string>
+    <string name="model_not_installed">未安装</string>
+    <string name="settings_cache_title">文本缓存</string>
+    <string name="settings_cache_switch">保存文本历史</string>
+    <string name="settings_cache_desc">在本机保存已确认文本与语言结果，保留最近 90 天且不超过 10000 条，超限自动清理。关闭后停止写入新记录，已存记录可在历史页删除。</string>
+    <string name="cache_notice_title">关于文本缓存</string>
+    <string name="cache_notice_body">本 App 默认在本机保存已确认的文本与翻译结果，用于历史回看与导出。\n\n保留期限：最近 90 天且不超过 10000 条，超限自动清理。\n删除方法：历史页可按句、按会话或全部删除；也可在设置中关闭缓存（关闭后不再写入新记录）。\n\n数据仅保存在本机应用私有目录，不进入系统备份。</string>
+    <string name="cache_notice_confirm">知道了</string>
+    <string name="settings_llm_title">云端 LLM 凭据</string>
+    <string name="settings_llm_hint">凭据仅存本机；未配置时语言结果显示为不可用</string>
+    <string name="llm_base_url_label">API 地址（含 /v1）</string>
+    <string name="llm_api_key_label">API 密钥</string>
+    <string name="llm_model_label">模型名</string>
+    <string name="llm_save">保存凭据</string>
+    <string name="llm_configured">已配置</string>
+    <string name="llm_not_configured">未配置</string>
+    <string name="llm_saved">凭据已保存</string>
+
+    <string name="history_title">历史</string>
+    <string name="history_empty">暂无记录</string>
+    <string name="history_export_json">导出 JSON</string>
+    <string name="history_export_csv">导出 CSV</string>
+    <string name="history_delete_all">全部删除</string>
+    <string name="history_delete_all_confirm">删除全部历史记录？此操作不可撤销。</string>
+    <string name="history_delete_session">删除本会话</string>
+    <string name="history_delete_session_confirm">删除该会话的全部记录？此操作不可撤销。</string>
+    <string name="history_delete_entry">删除本句</string>
+    <string name="history_session_header">会话 %1$s（%2$d 句）</string>
+    <string name="export_chooser_title">导出缓存文件</string>
+    <string name="export_receiver_notice">导出后的文件由接收方管理</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_delete">删除</string>
+
+    <string name="lang_zh_cn">中文</string>
+    <string name="lang_en_us">英文</string>
+    <string name="lang_ja_jp">日文</string>
 </resources>

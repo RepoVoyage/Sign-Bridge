@@ -16,6 +16,7 @@ import java.util.UUID
 interface TtsManager {
     fun enqueue(request: SpeakRequest): EnqueueResult
     fun stopCurrentAndClearQueue()               // 仅用户停止/关声音/显式重播
+    fun clearPendingKeepCurrent()                // 设置变更：清空尚未开始的旧任务，正在播的这句播完（§2.4.4）
     fun replay(sessionId: String, segmentId: String, language: LangCode)  // 用户显式重播，新 utteranceId
     val events: SharedFlow<TtsEvent>
 }
@@ -107,6 +108,11 @@ class TtsManagerImpl(
         queue.clear()
         speaker.stop()   // 当前播报经 onStop 终结（幂等吸收），队列已空不再推进
         maybeStopTicker()
+    }
+
+    override fun clearPendingKeepCurrent() {
+        queue.clear()
+        maybeStopTicker()   // 有当前播报时 ticker 保留（看门狗仍需巡检）
     }
 
     override fun replay(sessionId: String, segmentId: String, language: LangCode) {

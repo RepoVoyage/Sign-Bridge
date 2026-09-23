@@ -5,36 +5,154 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.repovoyage.sign.language.LanguageBackend
+import com.repovoyage.sign.language.OutputPreferences
+import com.repovoyage.sign.sentence.LangCode
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 
 private val Context.appSettingsStore: DataStore<Preferences> by preferencesDataStore("app_settings")
 
 /**
- * 应用设置（ARCHITECTURE §2.4.4：DataStore/StateFlow 可观察状态）。
- * 当前仅缓存相关两项（§2.6）；语言/语音/LLM 凭据随设置 UI 阶段扩充。
+ * 应用设置（ARCHITECTURE §2.4.4/§2.6/§6.3）：DataStore 持久化 + Flow 可观察，
+ * 不做一次性注入快照。约束：
+ * - [OutputPreferences.selectedLanguages] 非空，默认 [zh-CN]；列表顺序 = 处理优先级
+ * - [OutputPreferences.spokenLanguages] ⊆ selectedLanguages（选定语言变更时自动剪枝）
+ * - 影响语言处理输出的每次变更使 settingsRevision 递增——LanguageProcessor
+ *   据此取消旧任务、拒绝旧结果（§2.4.4）
+ * - LLM 凭据自持于本机（allowBackup=false，§6.3），发布包不内置密钥
+ *
+ * backend 暂固定 CLOUD（本地引擎选型为 plan.md 待决策项 #3）；语音总开关
+ * [ttsEnabled] 独立于 spokenLanguages：关闭时管线立即停播（§2.4.4）。
  */
-class AppSettings(private val context: Context) {
+class AppSettings(private val store: DataStore<Preferences>) {
+
+    constructor(context: Context) : this(context.appSettingsStore)
+
+    // ---------------------------------------------------------------- 缓存（§2.6）
 
     /** 文本缓存开关：默认开启；关闭后持有方停止写入新记录，已存记录由用户处置 */
-    val cacheEnabled: Flow<Boolean> =
-        context.appSettingsStore.data.map { it[KEY_CACHE_ENABLED] ?: true }
+    val cacheEnabled: Flow<Boolean> = store.data.map { it[KEY_CACHE_ENABLED] ?: true }
 
     suspend fun setCacheEnabled(enabled: Boolean) {
-        context.appSettingsStore.edit { it[KEY_CACHE_ENABLED] = enabled }
+        store.edit { it[KEY_CACHE_ENABLED] = enabled }
     }
 
     /** 首次使用告知（缓存内容/保留期限/删除方法）是否已展示并确认 */
     val cacheNoticeAcknowledged: Flow<Boolean> =
-        context.appSettingsStore.data.map { it[KEY_CACHE_NOTICE_ACK] ?: false }
+        store.data.map { it[KEY_CACHE_NOTICE_ACK] ?: false }
 
     suspend fun acknowledgeCacheNotice() {
-        context.appSettingsStore.edit { it[KEY_CACHE_NOTICE_ACK] = true }
+        store.edit { it[KEY_CACHE_NOTICE_ACK] = true }
     }
 
-    private companion object {
-        val KEY_CACHE_ENABLED = booleanPreferencesKey("cache_enabled")
-        val KEY_CACHE_NOTICE_ACK = booleanPreferencesKey("cache_notice_acknowledged")
+    // ---------------------------------------------------------------- 语言与语音（§2.4.4）
+
+    val selectedLanguages: Flow<List<LangCode>> =
+        store.data.map { parseTags(it[KEY_SELECTED_LANGUAGES]) ?: DEFAULT_LANGUAGES }
+
+    val spokenLanguages: Flow<List<LangCode>> =
+        store.data.map { parseTags(it[KEY_SPOKEN_LANGUAGES]) ?: DEFAULT_LANGUAGES }
+
+    /** 语音总开关；关闭时管线立即停止当前播报并清空待播（§2.4.4） */
+    val ttsEnabled: Flow<Boolean> = store.data.map { it[KEY_TTS_ENABLED] ?: true }
+
+    /** 设置版本号：语言/凭据每次变更递增，用于作废旧任务与旧结果 */
+    val settingsRevision: Flow<Long> = store.data.map { it[KEY_SETTINGS_REVISION] ?: 0L }
+
+    /** 语言处理设置快照（句子提交时取用） */
+    val preferences: Flow<OutputPreferences> =
+        combine(selectedLanguages, spokenLanguages, settingsRevision) { selected, spoken, revision ->
+            OutputPreferences(
+                selectedLanguages = selected,
+                spokenLanguages = spoken,
+                backend = LanguageBackend.CLOUD,
+                revision = revision,
+            )
+        }
+
+    suspend fun setSelectedLanguages(languages: List<LangCode>) {
+        require(languages.isNotEmpty()) { "selectedLanguages 不得为空" }
+        store.edit { prefs ->
+            val selected = languages.distinct()
+            prefs[KEY_SELECTED_LANGUAGES] = joinTags(selected)
+            // 语音语言必须属于选定字幕语言：自动剪枝
+            val spoken = parseTags(prefs[KEY_SPOKEN_LANGUAGES]) ?: DEFAULT_LANGUAGES
+            prefs[KEY_SPOKEN_LANGUAGES] = joinTags(spoken.filter { it in selected }.ifEmpty { listOf(selected.first()) })
+            prefs[KEY_SETTINGS_REVISION] = (prefs[KEY_SETTINGS_REVISION] ?: 0L) + 1
+        }
     }
+
+    suspend fun setSpokenLanguages(languages: List<LangCode>) {
+        store.edit { prefs ->
+            val selected = parseTags(prefs[KEY_SELECTED_LANGUAGES]) ?: DEFAULT_LANGUAGES
+            prefs[KEY_SPOKEN_LANGUAGES] = joinTags(languages.distinct().filter { it in selected })
+            prefs[KEY_SETTINGS_REVISION] = (prefs[KEY_SETTINGS_REVISION] ?: 0L) + 1
+        }
+    }
+
+    suspend fun setTtsEnabled(enabled: Boolean) {
+        store.edit { it[KEY_TTS_ENABLED] = enabled }
+    }
+
+    // ---------------------------------------------------------------- 识别模型选择（P5 产物）
+
+    /** 当前选定的识别模型 id（ModelCatalog）；null = 未选择。推理接入（P6）后即生效 */
+    val selectedModelId: Flow<String?> = store.data.map { it[KEY_SELECTED_MODEL_ID] }
+
+    suspend fun setSelectedModelId(modelId: String?) {
+        store.edit { prefs ->
+            if (modelId == null) prefs.remove(KEY_SELECTED_MODEL_ID)
+            else prefs[KEY_SELECTED_MODEL_ID] = modelId
+        }
+    }
+
+    // ---------------------------------------------------------------- LLM 凭据（§6.3）
+
+    val llmBaseUrl: Flow<String> = store.data.map { it[KEY_LLM_BASE_URL] ?: "" }
+    val llmApiKey: Flow<String> = store.data.map { it[KEY_LLM_API_KEY] ?: "" }
+    val llmModel: Flow<String> = store.data.map { it[KEY_LLM_MODEL] ?: "" }
+
+    val llmCredentials: Flow<LlmCredentials> =
+        combine(llmBaseUrl, llmApiKey, llmModel) { url, key, model -> LlmCredentials(url, key, model) }
+
+    suspend fun setLlmCredentials(credentials: LlmCredentials) {
+        store.edit { prefs ->
+            prefs[KEY_LLM_BASE_URL] = credentials.baseUrl.trim()
+            prefs[KEY_LLM_API_KEY] = credentials.apiKey.trim()
+            prefs[KEY_LLM_MODEL] = credentials.model.trim()
+            prefs[KEY_SETTINGS_REVISION] = (prefs[KEY_SETTINGS_REVISION] ?: 0L) + 1
+        }
+    }
+
+    companion object {
+        /** UI 可选语言【初始值】：与保真样本集/离线语音准备范围一致，扩充前先过 §2.5.1 */
+        val SUPPORTED_LANGUAGES = listOf(LangCode("zh-CN"), LangCode("en-US"), LangCode("ja-JP"))
+        val DEFAULT_LANGUAGES = listOf(LangCode("zh-CN"))
+
+        private val KEY_CACHE_ENABLED = booleanPreferencesKey("cache_enabled")
+        private val KEY_CACHE_NOTICE_ACK = booleanPreferencesKey("cache_notice_acknowledged")
+        private val KEY_SELECTED_LANGUAGES = stringPreferencesKey("selected_languages")
+        private val KEY_SPOKEN_LANGUAGES = stringPreferencesKey("spoken_languages")
+        private val KEY_TTS_ENABLED = booleanPreferencesKey("tts_enabled")
+        private val KEY_SETTINGS_REVISION = longPreferencesKey("settings_revision")
+        private val KEY_SELECTED_MODEL_ID = stringPreferencesKey("selected_model_id")
+        private val KEY_LLM_BASE_URL = stringPreferencesKey("llm_base_url")
+        private val KEY_LLM_API_KEY = stringPreferencesKey("llm_api_key")
+        private val KEY_LLM_MODEL = stringPreferencesKey("llm_model")
+
+        private fun joinTags(languages: List<LangCode>) = languages.joinToString(",") { it.tag }
+        private fun parseTags(raw: String?): List<LangCode>? =
+            raw?.split(',')?.filter { it.isNotBlank() }?.map { LangCode(it) }?.ifEmpty { null }
+    }
+}
+
+/** 云端 LLM 直连凭据（§6.3）；三项齐备才视为已配置 */
+data class LlmCredentials(val baseUrl: String, val apiKey: String, val model: String) {
+    val isConfigured: Boolean
+        get() = baseUrl.isNotBlank() && apiKey.isNotBlank() && model.isNotBlank()
 }

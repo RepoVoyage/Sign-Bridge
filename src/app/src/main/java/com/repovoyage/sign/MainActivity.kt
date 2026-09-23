@@ -1,303 +1,133 @@
 package com.repovoyage.sign
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
-import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.viewModels
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
-import com.arashivision.inskmp.insble.data.BleDeviceCore
-import com.arashivision.sdk.camera.api.CameraDevice
-import com.arashivision.sdk.camera.core.callback.BleScanCallback
-import com.arashivision.sdk.camera.core.model.ConnectType
-import com.repovoyage.sign.camera.CameraSession
-import com.repovoyage.sign.capture.CaptureEntry
-import com.repovoyage.sign.capture.CaptureEntryImpl
-import com.repovoyage.sign.camera.SdkCameraSession
-import com.repovoyage.sign.camera.SessionState
-import com.repovoyage.sign.service.CameraBridgeForegroundService
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import com.repovoyage.sign.settings.AppSettings
+import com.repovoyage.sign.ui.HistoryScreen
+import com.repovoyage.sign.ui.HistoryViewModel
+import com.repovoyage.sign.ui.MainScreen
+import com.repovoyage.sign.ui.MainViewModel
+import com.repovoyage.sign.ui.SettingsScreen
+import com.repovoyage.sign.ui.SettingsViewModel
+import com.repovoyage.sign.ui.SignTheme
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * P2 真机验证用最小操作面板：权限 → BLE 扫描 → 选中设备连接（经 FGS 持有的
- * CameraSession）→ 观察 state/events。正式 UI 在后续阶段另做。
+ * 单 Activity 宿主（ARCHITECTURE §3.2：Compose + MVVM/StateFlow）。
+ * 三屏枚举导航（主界面/设置/历史）；VM 由 SignApp 容器供给数据。
+ * P2 验证面板逻辑已迁入 MainViewModel/MainScreen。
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : ComponentActivity() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-
-    /** 采集入口（flavor 注入：training 可用，production 不可用且无按钮） */
-    private val captureEntry: CaptureEntry = CaptureEntryImpl
-
-    private var session: CameraSession? = null
-    private val sessionJobs = mutableListOf<Job>()
-    private val scannedDevices = mutableListOf<BleDeviceCore>()
-
-    private lateinit var stateText: TextView
-    private lateinit var statusText: TextView
-    private lateinit var statsText: TextView
-    private lateinit var deviceContainer: LinearLayout
-    private lateinit var scanButton: Button
-    private lateinit var stopButton: Button
-
-    private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-            if (grants.values.all { it }) startScan()
-            else statusText.text = getString(R.string.permission_denied_hint)
-        }
+    private val mainVm: MainViewModel by viewModels()
+    private val settingsVm: SettingsViewModel by viewModels()
+    private val historyVm: HistoryViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        buildViews()
-    }
-
-    override fun onDestroy() {
-        scope.cancel()
-        super.onDestroy()
-    }
-
-    // ------------------------------------------------------------------ UI
-
-    private fun buildViews() {
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-        }
-        stateText = TextView(this).apply {
-            text = getString(R.string.state_idle_hint)
-            textSize = 16f
-            setPadding(0, pad, 0, pad / 2)
-        }
-        statusText = TextView(this).apply {
-            text = getString(R.string.scan_hint)
-            textSize = 14f
-            setPadding(0, 0, 0, pad / 2)
-        }
-        statsText = TextView(this).apply {
-            textSize = 14f
-            setPadding(0, 0, 0, pad)
-        }
-        scanButton = Button(this).apply {
-            text = getString(R.string.scan_button)
-            setOnClickListener { onScanClick() }
-        }
-        stopButton = Button(this).apply {
-            text = getString(R.string.stop_button)
-            setOnClickListener { onStopClick() }
-        }
-        deviceContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-
-        root.addView(stateText)
-        root.addView(statusText)
-        root.addView(statsText)
-        root.addView(scanButton)
-        root.addView(stopButton)
-        // 采集入口：仅 training（production 的 CaptureEntryImpl 不可用，无入口）
-        if (captureEntry.isAvailable) {
-            root.addView(Button(this).apply {
-                text = getString(R.string.capture_start_button)
-                setOnClickListener { captureEntry.start(this@MainActivity) }
-            })
-            root.addView(Button(this).apply {
-                text = getString(R.string.capture_stop_button)
-                setOnClickListener { captureEntry.stop(this@MainActivity) }
-            })
-        }
-        root.addView(deviceContainer)
-        setContentView(ScrollView(this).apply { addView(root) })
-    }
-
-    private fun renderDevices() {
-        deviceContainer.removeAllViews()
-        scannedDevices.forEachIndexed { index, device ->
-            deviceContainer.addView(
-                Button(this).apply {
-                    text = device.name ?: getString(R.string.unnamed_device, index + 1)
-                    isAllCaps = false
-                    setOnClickListener { onDeviceClick(device) }
-                }
-            )
+        setContent {
+            SignTheme {
+                AppNav(mainVm, settingsVm, historyVm)
+            }
         }
     }
+}
 
-    // ---------------------------------------------------------------- 权限
+private enum class Screen { MAIN, SETTINGS, HISTORY }
 
-    private fun requiredPermissions(): Array<String> {
-        val perms = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // manifest 中 BLUETOOTH_SCAN 为 neverForLocation，无需位置权限
-            perms += Manifest.permission.BLUETOOTH_SCAN
-            perms += Manifest.permission.BLUETOOTH_CONNECT
-        } else {
-            perms += Manifest.permission.ACCESS_FINE_LOCATION
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            perms += Manifest.permission.POST_NOTIFICATIONS
-        }
-        return perms.toTypedArray()
+@Composable
+private fun AppNav(
+    mainVm: MainViewModel,
+    settingsVm: SettingsViewModel,
+    historyVm: HistoryViewModel,
+) {
+    var screen by rememberSaveable { mutableStateOf(Screen.MAIN) }
+    BackHandler(screen != Screen.MAIN) { screen = Screen.MAIN }
+
+    val context = LocalContext.current
+    var hasPermissions by remember { mutableStateOf(hasRuntimePermissions(context)) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        hasPermissions = grants.values.all { it }
     }
 
-    private fun hasRuntimePermissions(): Boolean = requiredPermissions().all {
-        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    // §2.6 首次使用告知：缓存内容、保留期限和删除方法
+    val settings = remember(context) { (context.applicationContext as SignApp).settings }
+    val scope = rememberCoroutineScope()
+    var showCacheNotice by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        showCacheNotice = !settings.cacheNoticeAcknowledged.first()
     }
 
-    // ----------------------------------------------------------------- 扫描
-
-    private fun onScanClick() {
-        if (hasRuntimePermissions()) startScan()
-        else permissionLauncher.launch(requiredPermissions())
+    when (screen) {
+        Screen.MAIN -> MainScreen(
+            vm = mainVm,
+            hasPermissions = hasPermissions,
+            onRequestPermissions = { permissionLauncher.launch(requiredPermissions()) },
+            onOpenSettings = { screen = Screen.SETTINGS },
+            onOpenHistory = { screen = Screen.HISTORY },
+        )
+        Screen.SETTINGS -> SettingsScreen(settingsVm, onBack = { screen = Screen.MAIN })
+        Screen.HISTORY -> HistoryScreen(historyVm, onBack = { screen = Screen.MAIN })
     }
 
-    private fun startScan() {
-        scannedDevices.clear()
-        renderDevices()
-        statusText.text = getString(R.string.scanning)
-        // BLE 扫描是独立于会话的 UI 层职责（CameraSession 只接收已发现的设备）
-        CameraDevice.get(ConnectType.BLE).scan(
-            SCAN_DURATION_MS,
-            object : BleScanCallback {
-                override fun onStarted() {}
-
-                override fun onScanning(bleDevice: BleDeviceCore) {
-                    // 回调线程不定，回主线程处理 UI
-                    scope.launch {
-                        if (scannedDevices.contains(bleDevice)) return@launch
-                        scannedDevices.add(bleDevice)
-                        renderDevices()
-                        statusText.text = getString(R.string.found_n_devices, scannedDevices.size)
-                    }
-                }
-
-                override fun onFinished(bleDeviceList: List<BleDeviceCore>) {
-                    scope.launch {
-                        scannedDevices.clear()
-                        scannedDevices.addAll(bleDeviceList)
-                        renderDevices()
-                        statusText.text = getString(R.string.scan_finished, scannedDevices.size)
-                    }
-                }
-
-                override fun onError(throwable: Throwable) {
-                    scope.launch {
-                        statusText.text = getString(R.string.scan_failed, throwable.message ?: "?")
-                    }
-                }
+    if (showCacheNotice) {
+        AlertDialog(
+            onDismissRequest = { showCacheNotice = false },
+            title = { Text(stringResource(R.string.cache_notice_title)) },
+            text = { Text(stringResource(R.string.cache_notice_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { settings.acknowledgeCacheNotice() }
+                    showCacheNotice = false
+                }) { Text(stringResource(R.string.cache_notice_confirm)) }
             },
         )
     }
+}
 
-    // ----------------------------------------------------------------- 连接
+// ---------------------------------------------------------------- 权限（自 P2 面板沿用）
 
-    private fun onDeviceClick(device: BleDeviceCore) {
-        statusText.text = getString(R.string.connecting_device, device.name ?: "?")
-        CameraBridgeForegroundService.start(this)
-        scope.launch {
-            // 等 FGS 创建会话（onCreate 同步执行，一般一轮即可）
-            var s = CameraBridgeForegroundService.session
-            var tries = 0
-            while (s == null && tries++ < 50) {
-                delay(100)
-                s = CameraBridgeForegroundService.session
-            }
-            if (s == null) {
-                statusText.text = getString(R.string.service_not_ready)
-                return@launch
-            }
-            attachSession(s)
-            s.start(device)
-        }
+private fun requiredPermissions(): Array<String> {
+    val perms = mutableListOf<String>()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        // manifest 中 BLUETOOTH_SCAN 为 neverForLocation，无需位置权限
+        perms += Manifest.permission.BLUETOOTH_SCAN
+        perms += Manifest.permission.BLUETOOTH_CONNECT
+    } else {
+        perms += Manifest.permission.ACCESS_FINE_LOCATION
     }
-
-    private fun attachSession(s: CameraSession) {
-        if (session === s) return
-        sessionJobs.forEach { it.cancel() }
-        sessionJobs.clear()
-        session = s
-        sessionJobs += scope.launch {
-            s.state.collect { state ->
-                stateText.text = getString(R.string.state_format, state)
-                if (state !is SessionState.Streaming) statsText.text = ""
-            }
-        }
-        sessionJobs += scope.launch {
-            s.events.collect { event -> statusText.text = getString(R.string.event_format, event) }
-        }
-        // 取流/解码统计 1s 采样（P3 验证期专用，走 SdkCameraSession 具体类型）
-        sessionJobs += scope.launch {
-            var lastFrames = -1L
-            var lastDecoded = -1L
-            var lastAt = 0L
-            var lastDecodeAt = 0L
-            while (isActive) {
-                delay(1_000)
-                val session = session as? SdkCameraSession
-                val st = session?.streamStats?.value
-                if (st == null) {
-                    lastFrames = -1
-                    continue
-                }
-                var text = ""
-                if (lastFrames >= 0 && lastAt > 0) {
-                    val fps = (st.framesCommitted - lastFrames) * 1000f / (SystemClock.elapsedRealtime() - lastAt)
-                    text = getString(
-                        R.string.stream_stats_format,
-                        st.generation,
-                        st.framesCommitted,
-                        fps,
-                        st.bytesCommitted / 1024f / 1024f,
-                        st.syncFrames,
-                    )
-                }
-                lastFrames = st.framesCommitted
-                lastAt = SystemClock.elapsedRealtime()
-                val ds = session?.decodeStats?.value
-                if (ds != null) {
-                    if (lastDecoded >= 0 && lastDecodeAt > 0 && ds.framesDecoded >= lastDecoded) {
-                        val dfps = (ds.framesDecoded - lastDecoded) * 1000f / (SystemClock.elapsedRealtime() - lastDecodeAt)
-                        text += "\n" + getString(
-                            R.string.decode_stats_format,
-                            ds.generation,
-                            ds.framesDecoded,
-                            dfps,
-                            ds.width,
-                            ds.height,
-                        )
-                    }
-                    lastDecoded = ds.framesDecoded
-                    lastDecodeAt = SystemClock.elapsedRealtime()
-                } else {
-                    lastDecoded = -1
-                }
-                if (text.isNotEmpty()) statsText.text = text
-            }
-        }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        perms += Manifest.permission.POST_NOTIFICATIONS
     }
+    return perms.toTypedArray()
+}
 
-    private fun onStopClick() {
-        scope.launch {
-            session?.stop()
-            CameraBridgeForegroundService.stop(this@MainActivity)
-            stateText.text = getString(R.string.state_idle_hint)
-            statusText.text = getString(R.string.scan_hint)
-        }
-    }
-
-    private companion object {
-        const val SCAN_DURATION_MS = 10_000L
-    }
+private fun hasRuntimePermissions(context: Context): Boolean = requiredPermissions().all {
+    ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
 }

@@ -7,18 +7,46 @@ import com.repovoyage.sign.history.RoomSentenceCache
 import com.repovoyage.sign.history.SentenceCache
 import com.repovoyage.sign.history.SentenceDatabase
 import com.repovoyage.sign.history.applyRetentionPolicy
+import com.repovoyage.sign.language.LanguageProcessor
+import com.repovoyage.sign.language.LanguageProcessorImpl
+import com.repovoyage.sign.pipeline.CredentialLlmPolisher
+import com.repovoyage.sign.pipeline.TranslationPipeline
+import com.repovoyage.sign.recognition.RecognitionSourceImpl
 import com.repovoyage.sign.settings.AppSettings
+import com.repovoyage.sign.tts.AndroidTtsSpeaker
+import com.repovoyage.sign.tts.TtsManager
+import com.repovoyage.sign.tts.TtsManagerImpl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class SignApp : Application() {
 
-    /** 应用级单例：设置 / 数据库 / 缓存门面（管线与 UI 阶段消费） */
+    /** 应用级单例容器（MVVM 的组合根；正式 DI 框架为 §3.2 遗留决策项） */
     val settings: AppSettings by lazy { AppSettings(this) }
     val database: SentenceDatabase by lazy { SentenceDatabase.create(this) }
     val sentenceCache: SentenceCache by lazy { RoomSentenceCache(database.sentenceDao()) }
+    val ttsSpeaker: AndroidTtsSpeaker by lazy { AndroidTtsSpeaker(this) }
+    val ttsManager: TtsManager by lazy { TtsManagerImpl(ttsSpeaker, appScope) }
+    val languageProcessor: LanguageProcessor by lazy {
+        LanguageProcessorImpl(
+            // §6.3：凭据运行时读取，发布包不内置密钥
+            engine = CredentialLlmPolisher { settings.llmCredentials.first() },
+            scope = appScope,
+        )
+    }
+    val pipeline: TranslationPipeline by lazy {
+        TranslationPipeline(
+            source = RecognitionSourceImpl,   // flavor 缝：training=桩源，production=不可用
+            settings = settings,
+            processor = languageProcessor,
+            tts = ttsManager,
+            cache = sentenceCache,
+            scope = appScope,
+        )
+    }
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

@@ -36,11 +36,10 @@ class P1ScaffoldTest {
     }
 
     @Test
-    fun `MainActivity 继承 AppCompatActivity`() {
+    fun `MainActivity 为 Activity 入口`() {
+        // P7 UI 迁移：AppCompatActivity → ComponentActivity（Compose 宿主，§3.2）
         assertTrue(
-            androidx.appcompat.app.AppCompatActivity::class.java.isAssignableFrom(
-                MainActivity::class.java
-            )
+            android.app.Activity::class.java.isAssignableFrom(MainActivity::class.java)
         )
     }
 }

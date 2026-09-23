@@ -188,4 +188,18 @@ class TtsManagerTest {
         terminal(utteranceOf("m1"), SpeakerOutcome.STOP)
         assertEquals(listOf("m1"), speaker.spoken.map { it.second.drop(2) })
     }
+
+    @Test
+    fun `设置变更清空待播但当前句播完`() = runBlocking {
+        collectEvents()
+        manager.enqueue(req("m1"))
+        manager.enqueue(req("m2"))
+        manager.enqueue(req("m3"))
+        assertEquals(1, speaker.spoken.size)          // m1 播报中，m2/m3 待播
+        manager.clearPendingKeepCurrent()
+        assertEquals(0, speaker.stopCount)            // 不打断当前句
+        terminal(utteranceOf("m1"), SpeakerOutcome.DONE)
+        assertEquals(1, speaker.spoken.size)          // 待播已清，不再推进新句
+        assertTrue(events.any { it is TtsEvent.Finished })
+    }
 }
