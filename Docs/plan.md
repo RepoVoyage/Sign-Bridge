@@ -211,8 +211,19 @@ COMPLETE 但有缺口按协议违规上报。单测 145 条 0 红、38 条分阶
 （`DirectLlmPolisher`，agent 服务逻辑移植：保真提示词 + guard 启发式 +
 错误映射，7 测试 loopback 联调）；**agent 中间服务路径已移除**（源码保留在
 main 分支），API.md §6.3 改为直连契约，凭据走 App 运行时设置（自持、
-排除备份，发布包不内置密钥）。待做：`LanguageProcessor` 编排、TtsManager、
-Room 落库、字幕/设置 UI。
+排除备份，发布包不内置密钥）。
+
+**进度（2026-09-23 晚）**：`LanguageProcessor` 编排、`TtsManager`、缓存域层
+（"Unresolved reference"排查结案：根因为 `repovayage` 拼写错误，非编译器 bug，
+见 Docs/编译问题排查记录）与 **Room 落库**落地：域实体按 §8 注解（复合主键/
+FK 级联/schema 导出）、`RoomSentenceCache`（合并=主键 upsert、历史=两表组合流）、
+启动时保留清理（`applyRetentionPolicy` 复用纯域 evict）、`CacheExporter`
+（FileProvider+ACTION_SEND，CSV 公式防护）、`AppSettings`（DataStore：缓存开关
+默认开+首次告知标志）。基建：Room 2.8.5 + KSP 2.3.0（2.3.12 需更新 AGP，回退）
++ DataStore 1.2.1。验收：JVM 179 条全绿、真机 DAO androidTest 8/8
+（小米 2510DRK44C/Android 16）、两 flavor debug + productionRelease 构建通过。
+待做：字幕/设置 UI（Compose 基建未引入）、管线接线（识别源缺失随 P5/P6；
+缓存写入的开关门控随管线）、UI 阶段处理首次告知展示与 LLM 凭据设置。
 
 ### P8 验收（持续，按 ARCHITECTURE.md §8 全表）
 
