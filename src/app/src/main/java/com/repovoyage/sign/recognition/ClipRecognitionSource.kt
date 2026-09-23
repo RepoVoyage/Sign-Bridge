@@ -51,9 +51,10 @@ interface ClipFeed {
  * 不作废整句）。草稿按槽序展示（空槽=＿，待识别=…）；「完成本句」把槽序
  * 原样送 Agent（空槽=空候选组，保留位置信息）。
  *
- * 置信度映射（2026-09-23 定稿）：Agent 的 needsConfirmation 布尔直接映射
- * 边界可靠性——true → UNCERTAIN（待核对+震动），false → RELIABLE；CV 侧
- * 拒识仅触发重打提示（needs_repeat），不震动、不是待核实标志。
+ * 置信度映射（2026-09-23 定稿，同日用户修订：组句直接入库）：完成本句一律
+ * 以 RELIABLE 边界收尾——句子进历史/字幕/播报；Agent 的 needsConfirmation
+ * → [needsConfirm] 信号（震动核对提醒，不阻断入库）；CV 侧拒识仅触发重打
+ * 提示（needs_repeat），不震动、不是待核实标志。
  */
 class ClipRecognitionSource(
     private val outputDir: File,
@@ -82,6 +83,10 @@ class ClipRecognitionSource(
     /** 服务端拒识（TOO_SHORT 等）→ VM 转发管线 reportNeedsRepeat()（重打提示，不震动） */
     private val _needsRepeat = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
     val needsRepeat: SharedFlow<Unit> = _needsRepeat
+
+    /** Agent 组句 needsConfirmation=true → VM 转发管线震动核对提醒（不阻断入库） */
+    private val _needsConfirm = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    val needsConfirm: SharedFlow<Unit> = _needsConfirm
 
     @Volatile private var tokens = RecognitionTokens("", "")
     @Volatile private var windowUs = (DEFAULT_WINDOW_SECONDS * 1_000_000).toLong()
@@ -325,11 +330,9 @@ class ClipRecognitionSource(
                     boundary = BoundarySignal(
                         cutoffPtsUs = capped.last().endPtsUs,
                         requiredFutureContextUs = 0,
-                        reliability = if (result.needsConfirmation) {
-                            BoundaryReliability.UNCERTAIN
-                        } else {
-                            BoundaryReliability.RELIABLE
-                        },
+                        // 2026-09-23 用户修订：组句直接入库（历史/字幕/播报），
+                        // needsConfirmation 只走 needsConfirm 提醒，不再阻断收尾
+                        reliability = BoundaryReliability.RELIABLE,
                         source = BoundarySource.MODEL,
                     ),
                 ),
@@ -341,6 +344,7 @@ class ClipRecognitionSource(
             }
             currentSegmentId = null
             _statusText.value = if (result.needsConfirmation) "组句待核对" else null
+            if (result.needsConfirmation) _needsConfirm.emit(Unit)
         }
     }
 

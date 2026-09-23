@@ -11,6 +11,7 @@ import com.repovoyage.sign.history.SentenceWithResults
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -57,6 +58,21 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     val conversationNames: StateFlow<Map<String, String>> =
         signApp.settings.conversationNames
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /**
+     * 顶栏动作弹窗状态（2026-09-23 用户决定：导出/删除做成右上角小图标）：
+     * 触发点在共享 TopAppBar（MainActivity），弹窗渲染在 HistoryScreen，经 VM 传递。
+     */
+    private val _exportChooserVisible = MutableStateFlow(false)
+    val exportChooserVisible: StateFlow<Boolean> = _exportChooserVisible.asStateFlow()
+
+    private val _deleteAllVisible = MutableStateFlow(false)
+    val deleteAllVisible: StateFlow<Boolean> = _deleteAllVisible.asStateFlow()
+
+    fun showExportChooser() { _exportChooserVisible.value = true }
+    fun hideExportChooser() { _exportChooserVisible.value = false }
+    fun showDeleteAll() { _deleteAllVisible.value = true }
+    fun hideDeleteAll() { _deleteAllVisible.value = false }
 
     /** 对话显示名：重命名优先，默认起始时间 */
     fun displayName(group: ConversationGroup, names: Map<String, String>): String =

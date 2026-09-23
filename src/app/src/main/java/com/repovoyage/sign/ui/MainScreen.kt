@@ -1,5 +1,6 @@
 package com.repovoyage.sign.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,9 +20,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -36,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -86,77 +91,109 @@ fun MainScreen(
         }
     }
 
+    // 设备列表可收起（2026-09-23 用户决定）：取流成功后自动收起，把空间留给字幕
+    var devicesExpanded by remember { mutableStateOf(true) }
+    LaunchedEffect(sessionState) {
+        if (sessionState is SessionState.Streaming) devicesExpanded = false
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        // ------------------------------------------------ 会话控制台（平面+发丝线）
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        // ------------------------------------------------ 会话控制台（卡片封装）
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (sessionState is SessionState.Streaming) {
-                    Box(
-                        Modifier.size(8.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(MaterialTheme.colorScheme.secondary),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text(
-                    sessionStateText(sessionState),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                sessionEvent?.let {
+            Column(
+                Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (sessionState is SessionState.Streaming) {
+                        Box(
+                            Modifier.size(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.secondary),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(start = 10.dp).weight(1f),
+                        sessionStateText(sessionState),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
-                }
-            }
-            if (statsText.isNotEmpty()) {
-                Text(
-                    statsText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = { if (hasPermissions) vm.startScan() else onRequestPermissions() },
-                ) { Text(stringResource(R.string.scan_button)) }
-                if (sessionState !is SessionState.Idle) {
-                    FilledTonalButton(onClick = vm::stopSession) {
-                        Text(stringResource(R.string.stop_button))
+                    sessionEvent?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = 10.dp).weight(1f),
+                        )
                     }
                 }
-            }
-            if (scanStatus.isNotEmpty()) {
-                Text(
-                    scanStatus,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (devices.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    devices.forEachIndexed { index, device ->
-                        FilterChip(
-                            selected = false,
-                            onClick = { vm.connect(device) },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = {
-                                Text(
-                                    vm.deviceLabel(device, index),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
+                if (statsText.isNotEmpty()) {
+                    Text(
+                        statsText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { if (hasPermissions) vm.startScan() else onRequestPermissions() },
+                    ) { Text(stringResource(R.string.scan_button)) }
+                    if (sessionState !is SessionState.Idle) {
+                        FilledTonalButton(onClick = vm::stopSession) {
+                            Text(stringResource(R.string.stop_button))
+                        }
+                    }
+                }
+                if (scanStatus.isNotEmpty()) {
+                    Text(
+                        scanStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (devices.isNotEmpty()) {
+                    // 可收起的设备列表（2026-09-23 用户决定）：收起后只留一行开关
+                    TextButton(onClick = { devicesExpanded = !devicesExpanded }) {
+                        Text(
+                            if (devicesExpanded) stringResource(R.string.devices_collapse)
+                            else stringResource(R.string.devices_expand, devices.size),
                         )
+                        Icon(
+                            painterResource(
+                                if (devicesExpanded) R.drawable.ic_expand_less
+                                else R.drawable.ic_expand_more,
+                            ),
+                            contentDescription = null,   // 旁有可见文字，纯装饰
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    if (devicesExpanded) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            devices.forEachIndexed { index, device ->
+                                FilterChip(
+                                    selected = false,
+                                    onClick = { vm.connect(device) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = {
+                                        Text(
+                                            vm.deviceLabel(device, index),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             }

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -43,6 +44,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.repovoyage.sign.settings.AppSettings
 import com.repovoyage.sign.ui.HistoryScreen
 import com.repovoyage.sign.ui.HistoryViewModel
@@ -103,6 +105,10 @@ private fun AppNav(
         showCacheNotice = !settings.cacheNoticeAcknowledged.first()
     }
 
+    // 历史页顶栏动作（2026-09-23 用户决定：导出/删除小图标放右上角）；弹窗在 HistoryScreen 渲染
+    val historyGroups by historyVm.groups.collectAsStateWithLifecycle()
+    val hasHistory = historyGroups.any { it.entries.isNotEmpty() }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -123,6 +129,22 @@ private fun AppNav(
                                 Tab.SETTINGS -> stringResource(R.string.settings_title)
                             },
                         )
+                    }
+                },
+                actions = {
+                    if (tab == Tab.HISTORY) {
+                        IconButton(onClick = historyVm::showExportChooser, enabled = hasHistory) {
+                            Icon(
+                                painterResource(R.drawable.ic_export),
+                                contentDescription = stringResource(R.string.history_export_title),
+                            )
+                        }
+                        IconButton(onClick = historyVm::showDeleteAll, enabled = hasHistory) {
+                            Icon(
+                                painterResource(R.drawable.ic_delete),
+                                contentDescription = stringResource(R.string.history_delete_all),
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

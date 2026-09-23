@@ -17,6 +17,8 @@
     <string name="scanning">扫描中…</string>
     <string name="found_n_devices">发现 %1$d 台设备</string>
     <string name="scan_finished">扫描完成：%1$d 台设备</string>
+    <string name="devices_expand">展开设备列表（%1$d）</string>
+    <string name="devices_collapse">收起设备列表</string>
     <string name="scan_failed">扫描失败：%1$s</string>
     <string name="connecting_device">连接 %1$s…</string>
     <string name="service_not_ready">前台服务未就绪</string>
@@ -86,6 +88,10 @@
     <string name="llm_configured">已配置</string>
     <string name="llm_not_configured">未配置</string>
     <string name="llm_saved">凭据已保存</string>
+    <string name="save_success_title">保存成功</string>
+    <string name="save_success_recognition">识别服务配置已保存；切片窗口在下次开始翻译时生效</string>
+    <string name="save_success_llm">LLM 凭据已保存并生效</string>
+    <string name="action_ok">确定</string>
 
     <string name="history_title">历史</string>
     <string name="history_empty">暂无记录</string>
@@ -94,6 +100,7 @@
     <string name="history_rename_title">对话名称</string>
     <string name="history_delete_group">删除本段</string>
     <string name="history_delete_group_confirm">删除这段对话的全部记录？此操作不可撤销。</string>
+    <string name="history_export_title">导出历史</string>
     <string name="history_export_json">导出 JSON</string>
     <string name="history_export_csv">导出 CSV</string>
     <string name="history_delete_all">全部删除</string>

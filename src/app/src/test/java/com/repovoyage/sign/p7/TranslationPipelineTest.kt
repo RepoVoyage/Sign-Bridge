@@ -201,9 +201,11 @@ class TranslationPipelineTest {
         assertEquals(1_000L, record.wallTimeStart)          // FINAL 时刻墙钟
         assertEquals(1, cache.merges.size)
 
-        // READY 且属于语音语言（默认 zh-CN）→ 入队，orderKey=源媒体时间
+        // 完成句直接朗读（2026-09-23 用户决定）：FINAL 即播识别原句，
+        // orderKey=源媒体时间；润色文本只进字幕不重复播
         val request = tts.enqueued.single()
-        assertEquals("整理后：我需要帮助", request.text)
+        assertEquals("我需要帮助", request.text)
+        assertEquals(LangCode("zh-CN"), request.language)
         assertEquals(1_000_000L, request.orderKey)
         scope.cancel()
     }
@@ -222,7 +224,7 @@ class TranslationPipelineTest {
     }
 
     @Test
-    fun `UNAVAILABLE 结果进字幕不进播报`() = runBlocking {
+    fun `UNAVAILABLE 润色结果只进字幕，原句仍直接朗读`() = runBlocking {
         processor.status = OutputStatus.UNAVAILABLE
         val pipeline = newPipeline()
         pipeline.start("s-test")
@@ -230,7 +232,8 @@ class TranslationPipelineTest {
         waitUntil { pipeline.state.value.lines.firstOrNull()?.results?.isNotEmpty() == true }
         val result = pipeline.state.value.lines.single().results[LangCode("zh-CN")]
         assertEquals(OutputStatus.UNAVAILABLE, result?.status)
-        assertTrue(tts.enqueued.isEmpty())
+        // 润色失败不产生播报，但完成句在 FINAL 时已直接朗读识别原句（2026-09-23 用户决定）
+        assertEquals("帮我", tts.enqueued.single().text)
         scope.cancel()
     }
 

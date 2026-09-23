@@ -3,6 +3,7 @@ package com.repovoyage.sign.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.repovoyage.sign.R
 import com.repovoyage.sign.SignApp
 import com.repovoyage.sign.recognition.ModelCatalog
 import com.repovoyage.sign.sentence.LangCode
@@ -12,6 +13,7 @@ import com.repovoyage.sign.settings.RecognitionTokens
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -119,13 +121,23 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectModel(modelId: String) = viewModelScope.launch { settings.setSelectedModelId(modelId) }
 
+    /** 保存成功弹窗（消息字符串资源 id）；null = 不显示 */
+    private val _saveNotice = MutableStateFlow<Int?>(null)
+    val saveNotice: StateFlow<Int?> = _saveNotice.asStateFlow()
+
+    fun dismissSaveNotice() {
+        _saveNotice.value = null
+    }
+
     fun saveCredentials() = viewModelScope.launch {
         settings.setLlmCredentials(LlmCredentials(urlDraft.value, keyDraft.value, modelDraft.value))
+        _saveNotice.value = R.string.save_success_llm
     }
 
     /** 保存模型 B 识别服务配置（令牌 + 切片窗口；窗口非法输入保持原值） */
     fun saveRecognitionConfig() = viewModelScope.launch {
         settings.setRecognitionTokens(cvTokenDraft.value, agentTokenDraft.value)
         clipWindowDraft.value.trim().toDoubleOrNull()?.let { settings.setClipWindowSeconds(it) }
+        _saveNotice.value = R.string.save_success_recognition
     }
 }

@@ -103,8 +103,10 @@ class CredentialLlmPolisher(
  * - 每句提交时取设置快照；settingsRevision 变更 → 清空尚未开始的旧语音任务，
  *   正在播的这句播完（§2.4.4）；语音总开关关闭 → 立即停止（§2.4.4）
  * - 缓存写入以 FINAL 时刻墙钟捕获时间；写入失败不影响实时字幕（§6 错误矩阵）
- * - READY 且属于语音语言且开关开 → 入队播报（orderKey=源媒体时间，§2.5.2）；
- *   超期未播 → MarkedUnspoken → 字幕标注"未播报"，用户可显式重播
+ * - 完成句直接朗读（2026-09-23 用户决定）：FINAL 时 zh-CN 在语音语言且开关开
+ *   → 立即朗读识别原句，不等、不依赖云端润色；译文（非 zh-CN）READY 且属于
+ *   语音语言 → 入队播报（orderKey=源媒体时间，§2.5.2）；超期未播 →
+ *   MarkedUnspoken → 字幕标注"未播报"，用户可显式重播
  * - [RecognitionSource.isAvailable]=false → SOURCE_UNAVAILABLE，不启动
  *
  * 初始值简化（真实识别源接线时细化）：单草稿槽（并发段最新者胜）；
@@ -136,6 +138,12 @@ class TranslationPipeline(
 
     fun reportNeedsRepeat() {
         _repeatPromptCount.value += 1
+    }
+
+    /** Agent 组句 needsConfirmation：震动核对提醒（限频/勿扰门禁内置于 alerter）；
+     * 句子照常收尾入库（2026-09-23 用户修订：组句直接存历史，不阻断） */
+    fun reportNeedsConfirmation() {
+        alerter?.onNeedsConfirmation()
     }
 
     private var runJob: Job? = null
@@ -355,6 +363,19 @@ class TranslationPipeline(
             if (settings.cacheEnabled.first()) {
                 runCatching { cache.upsertSentence(sentence.toSentenceRecord(wallMs(), wallMs())) }
             }
+            // 完成句直接朗读（2026-09-23 用户决定）：中文在语音语言且 TTS 总开关开
+            // 即立刻播识别原句，不等云端润色（凭据缺失/润色超时也有语音）
+            if (settings.ttsEnabled.first() && LangCode("zh-CN") in settings.spokenLanguages.first()) {
+                tts.enqueue(
+                    SpeakRequest(
+                        sessionId = sentence.sessionId,
+                        segmentId = sentence.segmentId,
+                        language = LangCode("zh-CN"),
+                        text = sentence.rawChinese,
+                        orderKey = sentence.startPtsUs,
+                    ),
+                )
+            }
             val prefs = settings.preferences.first()    // §2.4.4：每句提交时取设置快照
             processor.process(sentence, prefs).collect { result ->
                 if (manager === sm) onResult(sentence, result)
@@ -384,7 +405,10 @@ class TranslationPipeline(
         if (result.status == OutputStatus.NEEDS_CONFIRMATION) {
             alerter?.onNeedsConfirmation()   // 限频/勿扰门禁内置于 alerter
         }
-        if (result.status == OutputStatus.READY && result.text != null &&
+        // zh-CN 已在 FINAL 时直接朗读原句（2026-09-23 用户决定）：润色结果只进
+        // 字幕不重复播；其余语言（译文）仍走 READY → 播报
+        if (result.language.tag != "zh-CN" &&
+            result.status == OutputStatus.READY && result.text != null &&
             result.language in settings.spokenLanguages.first() && settings.ttsEnabled.first()
         ) {
             tts.enqueue(

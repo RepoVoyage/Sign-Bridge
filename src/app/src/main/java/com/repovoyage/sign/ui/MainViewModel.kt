@@ -69,6 +69,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             signApp.clipSource.needsRepeat.collect { signApp.pipeline.reportNeedsRepeat() }
         }
+        // Agent 组句 needsConfirmation → 震动核对提醒（句子照常入库，2026-09-23 用户修订）
+        viewModelScope.launch {
+            signApp.clipSource.needsConfirm.collect { signApp.pipeline.reportNeedsConfirmation() }
+        }
     }
 
     val pipelineState: StateFlow<SubtitleState> = signApp.pipeline.state

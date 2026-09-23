@@ -35,6 +35,15 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- 包可见性（Android 11+）：绑定系统 TTS 引擎（小爱等）必须声明
+         TTS_SERVICE 意图，否则 AppsFilter 拦截绑定，TextToSpeech 初始化
+         失败 status=-1（2026-09-23 真机联调实锤） -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".SignApp"
         android:allowBackup="false"

@@ -37,7 +37,8 @@ import java.io.File
  * 模型 B 固定窗口切片识别源验收（槽位制，2026-09-23 用户定稿）：每窗口一槽，
  * 拒识/失败/积压丢弃 = 空槽（＿）就地保留位置，不重排不去重不作废整句；
  * 草稿按槽序展示；「完成本句」槽序原样送 Agent（空槽=空候选组）。
- * needsConfirmation 布尔映射边界可靠性（待核对+震动 / 正常收尾）。
+ * needsConfirmation 一律 RELIABLE 收尾直接入库（2026-09-23 用户修订），
+ * true 时另发 needsConfirm 震动核对提醒。
  */
 class ClipRecognitionSourceTest {
 
@@ -235,12 +236,14 @@ class ClipRecognitionSourceTest {
     }
 
     @Test
-    fun `完成本句——needsConfirmation 映射 UNCERTAIN 边界，pts 取首末槽范围`() = runBlocking {
+    fun `完成本句——needsConfirmation 仍 RELIABLE 直接入库，另发核对提醒，pts 取首末槽范围`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()
         waitUntil(10_000) { source.isAvailable }
         val updates = java.util.concurrent.CopyOnWriteArrayList<RecognitionUpdate>()
         scope.launch { source.updates.collect { updates += it } }
+        val confirms = java.util.concurrent.atomic.AtomicInteger()
+        scope.launch { source.needsConfirm.collect { confirms.incrementAndGet() } }
         source.start()
 
         transport.cvQueue += ok("我")
@@ -256,11 +259,12 @@ class ClipRecognitionSourceTest {
         val final = updates.last()
         val boundary = final.boundary!!
         assertEquals("我想回家", final.draftText)
-        assertEquals(BoundaryReliability.UNCERTAIN, boundary.reliability)
+        assertEquals(BoundaryReliability.RELIABLE, boundary.reliability)   // 直接入库，不阻断
         assertNull(final.confidence)   // Agent 无数值置信度，不伪造
         assertEquals(1_000_000L, final.tokenSpans!!.first().startPtsUs)
         assertEquals(5_000_000L, boundary.cutoffPtsUs)
         waitUntil { source.statusText.value == "组句待核对" }
+        waitUntil { confirms.get() == 1 }   // 震动核对提醒
 
         // 成功后清槽：下一窗口开新句
         transport.cvQueue += ok("家")

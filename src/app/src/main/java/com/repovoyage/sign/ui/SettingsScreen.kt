@@ -1,24 +1,27 @@
 package com.repovoyage.sign.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -48,6 +51,21 @@ fun SettingsScreen(vm: SettingsViewModel) {
     val cvTokenDraft by vm.cvTokenDraft.collectAsState()
     val agentTokenDraft by vm.agentTokenDraft.collectAsState()
     val clipWindowDraft by vm.clipWindowDraft.collectAsState()
+    val saveNotice by vm.saveNotice.collectAsStateWithLifecycle()
+
+    // 保存成功弹窗（2026-09-23 用户决定：配置保存后明确告知）
+    saveNotice?.let { messageRes ->
+        AlertDialog(
+            onDismissRequest = vm::dismissSaveNotice,
+            title = { Text(stringResource(R.string.save_success_title)) },
+            text = { Text(stringResource(messageRes)) },
+            confirmButton = {
+                TextButton(onClick = vm::dismissSaveNotice) {
+                    Text(stringResource(R.string.action_ok))
+                }
+            },
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -244,22 +262,27 @@ fun SettingsScreen(vm: SettingsViewModel) {
     }
 }
 
-/** 平面分区 + 发丝线（frontend-design 重构：去卡片套件） */
+/** 卡片封装分区（2026-09-23 用户决定：各设置选项分组封装成卡片） */
 @Composable
 private fun SettingsSection(
     title: String,
     hint: String,
     content: @Composable () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth()) {
-        Text(title, style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(4.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
         Column(
-            Modifier.padding(vertical = 12.dp),
+            Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Text(title, style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
             Text(hint, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             content()

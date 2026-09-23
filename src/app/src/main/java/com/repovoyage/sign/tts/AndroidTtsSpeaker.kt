@@ -26,12 +26,31 @@ class AndroidTtsSpeaker(context: Context) : TtsSpeaker {
     // onInit 异步回调晚于构造完成，回调内安全引用
     private val tts: TextToSpeech?
 
+    /** 就绪态变化日志去重（设置页 3s 轮询，避免刷屏）；仅诊断用 */
+    private val readyLogState = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
     init {
         tts = TextToSpeech(context.applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.setOnUtteranceProgressListener(progressListener)
                 ready = true
+                logVoices()
+            } else {
+                android.util.Log.e(TAG, "TTS 引擎初始化失败：status=$status")
             }
+        }
+    }
+
+    /** 联调诊断：引擎与中文语音包快照（只记元数据，不记播报内容——§2.6） */
+    private fun logVoices() {
+        runCatching {
+            val all = tts?.voices.orEmpty()
+            val zh = all.filter { it.locale.language == "zh" }
+            android.util.Log.i(
+                TAG,
+                "TTS 就绪：引擎=${tts?.defaultEngine}，voice 共 ${all.size} 个，" +
+                    "中文 ${zh.map { "${it.locale}(离线=${!it.isNetworkConnectionRequired})" }}",
+            )
         }
     }
 
@@ -39,10 +58,16 @@ class AndroidTtsSpeaker(context: Context) : TtsSpeaker {
         val engine = tts
         if (!ready || engine == null) return false
         val locale = Locale.forLanguageTag(language.tag)
-        // 离线 Voice 存在即就绪；引擎未下载该语言数据时不触发隐式下载
-        return engine.voices?.any { voice ->
-            voice.locale == locale && !voice.isNetworkConnectionRequired
+        // 离线 Voice 存在即就绪；引擎未下载该语言数据时不触发隐式下载。
+        // 宽松 locale 匹配（2026-09-23 真机联调）：系统语音包常以 zh-Hans-CN
+        // 或裸 zh 形式上报，与 forLanguageTag("zh-CN") 严格相等会误判不可用
+        val result = engine.voices?.any { voice ->
+            localeMatches(voice.locale, locale) && !voice.isNetworkConnectionRequired
         } == true
+        if (readyLogState.put(language.tag, result) != result) {
+            android.util.Log.i(TAG, "语音就绪判定 ${language.tag}=$result")
+        }
+        return result
     }
 
     override fun speak(utteranceId: String, text: String, language: LangCode): Boolean {
@@ -53,9 +78,33 @@ class AndroidTtsSpeaker(context: Context) : TtsSpeaker {
         if (setLangResult == TextToSpeech.LANG_MISSING_DATA ||
             setLangResult == TextToSpeech.LANG_NOT_SUPPORTED
         ) {
+            android.util.Log.w(TAG, "TTS setLanguage(${language.tag}) 失败：$setLangResult")
             return false
         }
-        return engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId) == TextToSpeech.SUCCESS
+        val submitted = engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId) == TextToSpeech.SUCCESS
+        android.util.Log.i(TAG, "TTS 播报提交 ${language.tag}（${text.length} 字）：$submitted")
+        return submitted
+    }
+
+    internal companion object {
+        const val TAG = "YuqiaoTts"
+
+        /**
+         * 目标 locale（如 zh-CN）能否由语音包 locale 承担：语言必须一致；
+         * 国家缺省视为通用包可用；中文按 script 区分简繁（Hant 不承担 zh-CN）。
+         */
+        fun localeMatches(voice: Locale, target: Locale): Boolean {
+            if (voice.language != target.language) return false
+            if (voice.script.isNotEmpty() && target.script.isNotEmpty() &&
+                voice.script != target.script
+            ) {
+                return false
+            }
+            if (target.language == "zh" && target.script.isEmpty() && voice.script == "Hant") {
+                return false   // zh-CN 目标需简体（zh-Hans-* 或无 script 的 zh/zh-CN）
+            }
+            return voice.country.isEmpty() || voice.country == target.country
+        }
     }
 
     override fun stop() {
