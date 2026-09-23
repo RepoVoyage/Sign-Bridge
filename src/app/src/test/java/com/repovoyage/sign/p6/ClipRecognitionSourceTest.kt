@@ -151,6 +151,7 @@ class ClipRecognitionSourceTest {
         feed = feed,
         scope = scope,
         acquireCellular = { cellularAcquired++ },
+        debugRetainDir = File(tmp.root, "retain"),
     )
 
     private fun ok(vararg labels: String) =
@@ -211,8 +212,9 @@ class ClipRecognitionSourceTest {
         waitUntil { updates.isNotEmpty() }
         assertEquals("我", updates.last().draftText)
         assertNull(updates.last().boundary)
-        // 上传后切片文件即删（不滞留隐私数据）
+        // 上传后切片文件即删（不滞留隐私数据）；训练留存目录保留验尸副本
         waitUntil { !File(tmp.root, "a.mp4").exists() }
+        assertEquals(1, File(tmp.root, "retain").listFiles()?.size)
 
         transport.cvQueue += CvResult("TOO_SHORT", 5, 0.1, emptyList(), false)
         feed.callback!!(clip("b.mp4", byteArrayOf(4)), 3_000_000, 5_000_000)

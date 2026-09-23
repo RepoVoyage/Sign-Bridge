@@ -115,20 +115,23 @@ class ClipSegmenter(
                     generation = frame.streamGeneration
                     corrupted = false
                 }
-                // MediaMuxer expects Annex-B access units and writes MP4 length prefixes itself.
-                // Feeding it pre-converted AVCC makes the resulting MP4 undecodable.
-                val sample = annexBVclSample(frame.data) ?: continue
+                val sample = annexBToAvcc(frame.data) ?: continue
                 val info = MediaCodec.BufferInfo().apply {
                     presentationTimeUs = frame.ptsUs - startPts
                     size = sample.size
                     flags = if (frame.isSyncPoint) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                 }
-                runCatching { muxer!!.writeSampleData(track, java.nio.ByteBuffer.wrap(sample), info) }
-                    .onSuccess {
-                        framesWritten++
-                        lastPts = frame.ptsUs
-                    }
-                    .onFailure { corrupted = true }
+                // 只有真正写入成功才计数：写失败的段是空壳（track 无样本，
+                // stop 出的 MP4 服务端解出 0 帧），必须按坏段丢弃
+                val written = runCatching {
+                    muxer!!.writeSampleData(track, java.nio.ByteBuffer.wrap(sample), info)
+                }.isSuccess
+                if (written) {
+                    framesWritten++
+                    lastPts = frame.ptsUs
+                } else {
+                    corrupted = true
+                }
             }
         } finally {
             closeSegment(emit = false)
@@ -145,21 +148,23 @@ class ClipSegmenter(
 }
 
 /**
- * Keep VCL NAL units in Annex-B format for Android MediaMuxer. SPS/PPS are
- * supplied through MediaFormat CSD; the muxer converts sample start codes to
- * MP4 length prefixes. No VCL returns null.
+ * Annex-B → AVCC（MP4 样本格式）：仅保留 VCL NAL（type 1/5），SPS/PPS/SEI
+ * 走 format CSD 不进样本；4 字节起始码的多余前导 0 归上一 NAL 尾部，按
+ * [H264DecodePrep] 同款规则裁掉。无 VCL 返回 null。
  */
-internal fun annexBVclSample(data: ByteArray): ByteArray? {
+internal fun annexBToAvcc(data: ByteArray): ByteArray? {
     val out = ByteArrayOutputStream()
     forEachAnnexBNal(data) { start, end ->
         val type = data[start].toInt() and 0x1F
         if (type == NAL_TYPE_SLICE || type == NAL_TYPE_IDR) {
             var e = end
             while (e > start && data[e - 1] == 0.toByte()) e--
-            if (e > start) {
-                out.write(byteArrayOf(0, 0, 0, 1))
-                out.write(data, start, e - start)
-            }
+            val len = e - start
+            out.write(len ushr 24 and 0xFF)
+            out.write(len ushr 16 and 0xFF)
+            out.write(len ushr 8 and 0xFF)
+            out.write(len and 0xFF)
+            out.write(data, start, len)
         }
     }
     return if (out.size() == 0) null else out.toByteArray()

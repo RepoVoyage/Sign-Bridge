@@ -19,6 +19,7 @@ import com.repovoyage.sign.pipeline.CredentialLlmPolisher
 import com.repovoyage.sign.pipeline.TranslationPipeline
 import com.repovoyage.sign.recognition.CameraClipFeed
 import com.repovoyage.sign.recognition.ClipRecognitionSource
+import com.repovoyage.sign.recognition.DebugClipRetention
 import com.repovoyage.sign.recognition.HttpClipTransport
 import com.repovoyage.sign.recognition.LocalVideoComposeClient
 import com.repovoyage.sign.recognition.LocalVideoCvClient
@@ -86,6 +87,7 @@ class SignApp : Application() {
             feed = CameraClipFeed { CameraBridgeForegroundService.session as? SdkCameraSession },
             scope = appScope,
             acquireCellular = { cloudNetwork.acquire() },
+            debugRetainDir = DebugClipRetention.dir(this),   // flavor 缝：production=null
         )
     }
 

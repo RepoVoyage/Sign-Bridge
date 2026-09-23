@@ -61,6 +61,8 @@ class ClipRecognitionSource(
     private val feed: ClipFeed,
     private val scope: CoroutineScope,
     private val acquireCellular: () -> Unit,
+    /** 联调验尸留存目录（flavor 缝：training=cacheDir/clips_debug，production=null 不落盘） */
+    private val debugRetainDir: File? = null,
 ) : RecognitionSource {
 
     override val isAvailable: Boolean get() = tokens.isConfigured
@@ -246,6 +248,7 @@ class ClipRecognitionSource(
         val bytes = runCatching { file.readBytes() }.getOrNull()
         file.delete()
         if (!running || bytes == null) return
+        retainForDebug(bytes)
         lock.withLock {
             if (!running) return
             _statusText.value = "正在识别第 ${gestures.size + 1} 个词…"
@@ -283,12 +286,25 @@ class ClipRecognitionSource(
         }
     }
 
+    /** training 联调验尸：滚动保留最近 [MAX_RETAINED_CLIPS] 个已上传切片 */
+    private fun retainForDebug(bytes: ByteArray) {
+        val dir = debugRetainDir ?: return
+        runCatching {
+            dir.mkdirs()
+            val existing = dir.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
+            existing.take(maxOf(0, existing.size - MAX_RETAINED_CLIPS + 1)).forEach { it.delete() }
+            File(dir, "clip-${System.currentTimeMillis()}.mp4").writeBytes(bytes)
+        }
+    }
+
     companion object {
         /** 切片窗口默认值（秒）；用户可在设置中定义，start 时读取 */
         const val DEFAULT_WINDOW_SECONDS = 2.0
 
         /** 待识别积压上限（另有一段在识别中）；溢出即丢句重打，不无限排队 */
         const val CLIP_BACKLOG_CAPACITY = 2
+
+        private const val MAX_RETAINED_CLIPS = 5
     }
 }
 
