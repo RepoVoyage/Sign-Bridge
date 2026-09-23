@@ -2,18 +2,19 @@ package com.repovoyage.sign.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -25,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -43,6 +45,9 @@ fun SettingsScreen(vm: SettingsViewModel) {
     val urlDraft by vm.urlDraft.collectAsState()
     val keyDraft by vm.keyDraft.collectAsState()
     val modelDraft by vm.modelDraft.collectAsState()
+    val cvTokenDraft by vm.cvTokenDraft.collectAsState()
+    val agentTokenDraft by vm.agentTokenDraft.collectAsState()
+    val clipWindowDraft by vm.clipWindowDraft.collectAsState()
 
     Column(
         modifier = Modifier
@@ -131,6 +136,54 @@ fun SettingsScreen(vm: SettingsViewModel) {
             }
         }
 
+        // ------------------------------------------------ 模型 B 识别服务（P6 联调）
+        SettingsSection(
+            title = stringResource(R.string.settings_recognition_title),
+            hint = stringResource(R.string.settings_recognition_hint),
+        ) {
+            OutlinedTextField(
+                value = cvTokenDraft,
+                onValueChange = { vm.cvTokenDraft.value = it },
+                label = { Text(stringResource(R.string.cv_token_label)) },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = agentTokenDraft,
+                onValueChange = { vm.agentTokenDraft.value = it },
+                label = { Text(stringResource(R.string.agent_token_label)) },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            val clipWindow by vm.clipWindowSeconds.collectAsStateWithLifecycle()
+            OutlinedTextField(
+                value = clipWindowDraft,
+                onValueChange = { vm.clipWindowDraft.value = it },
+                label = { Text(stringResource(R.string.clip_window_label)) },
+                supportingText = { Text(stringResource(R.string.clip_window_current, clipWindow)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = vm::saveRecognitionConfig) {
+                    Text(stringResource(R.string.recognition_save))
+                }
+                val tokens by vm.recognitionTokens.collectAsStateWithLifecycle()
+                Text(
+                    stringResource(
+                        if (tokens.isConfigured) R.string.llm_configured else R.string.llm_not_configured,
+                    ),
+                    modifier = Modifier.padding(start = 12.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (tokens.isConfigured) MaterialTheme.colorScheme.secondary
+                    else MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
         // ------------------------------------------------ 文本缓存
         SettingsSection(
             title = stringResource(R.string.settings_cache_title),
@@ -191,30 +244,25 @@ fun SettingsScreen(vm: SettingsViewModel) {
     }
 }
 
+/** 平面分区 + 发丝线（frontend-design 重构：去卡片套件） */
 @Composable
 private fun SettingsSection(
     title: String,
     hint: String,
     content: @Composable () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth()) {
         Text(title, style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            ),
+            color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Column(
+            Modifier.padding(vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(
-                Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(hint, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                content()
-            }
+            Text(hint, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            content()
         }
     }
 }

@@ -92,14 +92,24 @@ private val DarkColors = darkColorScheme(
     inversePrimary = Color(0xFF1259C0),
 )
 
-/** 字幕优先的排版：正文 18sp/28sp 行高，标签 12sp 起（≥12sp 红线） */
+/**
+ * 字幕优先的排版（frontend-design 重构）：字幕是 hero——22sp/30sp + 0.3sp
+ * 字距（远距离可读）；草稿/历史 18sp；chrome 标签 12sp 起（≥12sp 红线）。
+ * CJK 不 bundling 显示字体（包体），刻意以尺度/字重对比承载个性。
+ */
 object YuqiaoType {
     val subtitle = TextStyle(
-        fontSize = 18.sp,
-        lineHeight = 28.sp,
+        fontSize = 22.sp,
+        lineHeight = 30.sp,
+        letterSpacing = 0.3.sp,
         fontWeight = FontWeight.Medium,
     )
-    val subtitleDraft = subtitle.copy(fontWeight = FontWeight.Normal)
+    val subtitleDraft = TextStyle(
+        fontSize = 18.sp,
+        lineHeight = 26.sp,
+        letterSpacing = 0.2.sp,
+        fontWeight = FontWeight.Normal,
+    )
 }
 
 private val YuqiaoTypography = Typography().run {

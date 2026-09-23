@@ -32,8 +32,8 @@
     <string name="tab_main">翻译</string>
     <string name="state_live_badge">取流中</string>
     <string name="repeat_prompt">识别置信不足，请重打一次该句</string>
-    <string name="subtitle_empty_idle">开始翻译后，字幕将显示在这里</string>
-    <string name="subtitle_empty_running">等待识别结果…</string>
+    <string name="subtitle_empty_idle">点上方「开始翻译」，识别到的句子会按新到旧落在这里</string>
+    <string name="subtitle_empty_running">正在看手语，句子落下来会显示在这里</string>
     <string name="voice_unavailable_marker">·语音不可用</string>
     <string name="voice_not_ready_list">语音未就绪：%1$s（该语言仅显示字幕）</string>
     <string name="diag_stats_format">缓冲 入%1$d/解%2$d｜缺帧 %3$d</string>
@@ -61,7 +61,15 @@
     <string name="settings_spoken_hint">必须属于字幕语言；缺离线语音的语言仅显示字幕</string>
     <string name="settings_tts_switch">语音播报</string>
     <string name="settings_model_title">识别模型</string>
-    <string name="settings_model_hint">两模型均部署云端，按拍摄视角选择；识别接线（P6）后生效</string>
+    <string name="settings_model_hint">两模型均部署云端，按拍摄视角选择；模型 B 已接固定窗口切片识别（需配置下方识别服务），模型 A 待接线</string>
+    <string name="settings_recognition_title">模型 B 识别服务</string>
+    <string name="settings_recognition_hint">词级 CV 与组句 Agent 两个令牌由部署方提供，仅存本机；两项齐备后选择模型 B 才能开始翻译</string>
+    <string name="cv_token_label">CV 服务令牌</string>
+    <string name="agent_token_label">Agent 服务令牌</string>
+    <string name="clip_window_label">切片窗口（秒）</string>
+    <string name="clip_window_current">当前 %1$.1f 秒；每段视频固定时长，0.5–10 秒，改动在下次开始翻译后生效</string>
+    <string name="recognition_save">保存识别配置</string>
+    <string name="finish_sentence">完成本句</string>
     <string name="settings_cache_title">文本缓存</string>
     <string name="settings_cache_switch">保存文本历史</string>
     <string name="settings_cache_desc">在本机保存已确认文本与语言结果，保留最近 90 天且不超过 10000 条，超限自动清理。关闭后停止写入新记录，已存记录可在历史页删除。</string>

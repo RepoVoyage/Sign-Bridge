@@ -4,16 +4,16 @@ import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -220,44 +220,39 @@ private fun RenameDialog(
     )
 }
 
+/** 平面行 + 发丝线分隔（frontend-design 重构：去卡片套件） */
 @Composable
 private fun HistoryEntryCard(entry: SentenceWithResults, onDelete: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(entry.sentence.rawChinese, style = YuqiaoType.subtitle, fontWeight = FontWeight.Bold)
-                    Text(
-                        DateFormat.getDateTimeInstance().format(Date(entry.sentence.wallTimeStart)),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                TextButton(onClick = onDelete) { Text(stringResource(R.string.history_delete_entry)) }
-            }
-            entry.results.forEach { result ->
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(entry.sentence.rawChinese, style = YuqiaoType.subtitleDraft, fontWeight = FontWeight.SemiBold)
                 Text(
-                    buildString {
-                        append(languageTagLabel(result.language.tag))
-                        append("：")
-                        append(
-                            when (result.status) {
-                                "READY" -> result.text ?: ""
-                                "NEEDS_CONFIRMATION" -> "${result.text ?: ""}（待核对）"
-                                else -> "不可用"
-                            },
-                        )
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
+                    DateFormat.getDateTimeInstance().format(Date(entry.sentence.wallTimeStart)),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            TextButton(onClick = onDelete) { Text(stringResource(R.string.history_delete_entry)) }
         }
+        entry.results.forEach { result ->
+            Text(
+                buildString {
+                    append(languageTagLabel(result.language.tag))
+                    append("：")
+                    append(
+                        when (result.status) {
+                            "READY" -> result.text ?: ""
+                            "NEEDS_CONFIRMATION" -> "${result.text ?: ""}（待核对）"
+                            else -> "不可用"
+                        },
+                    )
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
 

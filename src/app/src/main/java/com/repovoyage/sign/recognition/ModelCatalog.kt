@@ -16,8 +16,11 @@ data class ModelCatalogEntry(
 
 object ModelCatalog {
 
+    /** 第一视角模型（云端词级 CV + 组句 Agent 已部署，固定窗口切片识别已接线） */
+    const val MODEL_B_ID = "model-b"
+
     val ENTRIES = listOf(
         ModelCatalogEntry("model-a", "模型 A", "面对面视角（相机对着打语者）"),
-        ModelCatalogEntry("model-b", "模型 B", "第一视角（打语者自身视角）"),
+        ModelCatalogEntry(MODEL_B_ID, "模型 B", "第一视角（打语者自身视角）"),
     )
 }

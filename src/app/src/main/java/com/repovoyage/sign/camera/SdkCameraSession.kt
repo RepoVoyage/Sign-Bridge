@@ -26,6 +26,7 @@ import com.repovoyage.sign.video.DecodeFrameQueue
 import com.repovoyage.sign.video.DecodeStats
 import com.repovoyage.sign.video.DecodeSyncGate
 import com.repovoyage.sign.video.DecodedFrame
+import com.repovoyage.sign.video.EncodedFrame
 import com.repovoyage.sign.video.FrameAssembler
 import com.repovoyage.sign.video.H264DecodePrep
 import com.repovoyage.sign.video.StreamChunk
@@ -98,6 +99,19 @@ class SdkCameraSession(
     /** 解码输出消费方（flavor 注入，API.md §2.2）；null = 仅统计（P3 验证期形态） */
     @Volatile
     var decodedFrameSink: DecodedFrameSink? = null
+
+    /**
+     * 编码帧分流（P6 固定窗口切片识别，解码前）：收 prep 之后的 H.264 帧
+     * （含随机访问点标记）。回调必须非阻塞（切片器入口是有界 Channel）；
+     * null = 不分流。异常不影响取流主链路。
+     */
+    @Volatile
+    var encodedFrameTap: ((EncodedFrame) -> Unit)? = null
+
+    /** 主动请求随机访问帧（切片段起点/重同步用；GOP 实测超长，不能干等下一个 IDR） */
+    fun requestKeyFrame() {
+        scope.launch { runCatching { currentDevice?.preview?.requestStreamIframe() } }
+    }
 
     /** 相机静态信息（§2.8.3 采集元数据；连接成功时刷新，取 SDK 缓存不发起 RPC） */
     @Volatile
@@ -298,6 +312,7 @@ class SdkCameraSession(
                     lastPtsUs = frames.last().ptsUs,
                     syncFrames = (st?.syncFrames ?: 0) + frames.count { it.isSyncPoint },
                 )
+                encodedFrameTap?.let { tap -> frames.forEach { runCatching { tap(it) } } }
                 frames.forEach { frameQueue.offer(it) }
                 _diagStats.value = _diagStats.value.copy(ingestDepth = queue.depth, gaps = gapCount.get())
             }

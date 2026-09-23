@@ -45,8 +45,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 采集入口（flavor 缝：training 可用，production 无入口） */
     val captureEntry get() = CaptureEntryImpl
 
-    /** 识别源可用性（flavor 缝：training 桩源=true，production 未接模型=false） */
-    val recognitionAvailable: Boolean = RecognitionSourceImpl.isAvailable
+    /**
+     * 识别源可用性（路由后）：模型 B → 识别服务令牌齐备；其余 → flavor 缝
+     * （training 桩源=true，production 未接模型=false）
+     */
+    val recognitionAvailable: StateFlow<Boolean> = combine(
+        signApp.settings.selectedModelId,
+        signApp.settings.recognitionTokens,
+    ) { id, tokens ->
+        if (id == ModelCatalog.MODEL_B_ID) tokens.isConfigured else RecognitionSourceImpl.isAvailable
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecognitionSourceImpl.isAvailable)
+
+    /** 切片识别模式（模型 B）：主界面显示「完成本句」与联调状态行 */
+    val clipMode: StateFlow<Boolean> = signApp.settings.selectedModelId
+        .map { it == ModelCatalog.MODEL_B_ID }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** 切片识别联调状态（上传/识别/组句进度与失败原因） */
+    val clipStatus: StateFlow<String?> = signApp.clipSource.statusText
+
+    init {
+        // 词级拒绝（TOO_SHORT 等）→ 重打提示（非待核实、不震动，2026-09-23 定稿）
+        viewModelScope.launch {
+            signApp.clipSource.needsRepeat.collect { signApp.pipeline.reportNeedsRepeat() }
+        }
+    }
 
     val pipelineState: StateFlow<SubtitleState> = signApp.pipeline.state
 
@@ -235,7 +258,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val repeatPromptCount: StateFlow<Int> = signApp.pipeline.repeatPromptCount
 
-    val sourceDescription: String = RecognitionSourceImpl.sourceDescription
+    val sourceDescription: StateFlow<String> = combine(
+        signApp.settings.selectedModelId,
+        signApp.settings.recognitionTokens,
+    ) { id, _ ->
+        if (id == ModelCatalog.MODEL_B_ID) signApp.clipSource.sourceDescription
+        else RecognitionSourceImpl.sourceDescription
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecognitionSourceImpl.sourceDescription)
+
+    /** 用户「完成本句」：已收集词候选送 Agent 组句（仅切片识别模式有效） */
+    fun finishSentence() = signApp.clipSource.finishSentence()
 
     val selectedModelName: StateFlow<String> = signApp.settings.selectedModelId
         .map { id -> ModelCatalog.ENTRIES.find { it.id == id }?.displayName ?: "未选择模型" }

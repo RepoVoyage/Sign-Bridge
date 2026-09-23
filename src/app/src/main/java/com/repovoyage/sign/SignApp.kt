@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.util.Log
 import com.arashivision.sdk.camera.InstaCameraSDK
 import com.repovoyage.sign.alert.ConfirmationAlerter
+import com.repovoyage.sign.camera.SdkCameraSession
 import com.repovoyage.sign.language.DEFAULT_LLM_CLIENT
 import com.repovoyage.sign.net.CloudNetworkManager
 import com.repovoyage.sign.net.ConnectivityManagerCloudNetworkProvider
@@ -16,7 +17,15 @@ import com.repovoyage.sign.language.LanguageProcessor
 import com.repovoyage.sign.language.LanguageProcessorImpl
 import com.repovoyage.sign.pipeline.CredentialLlmPolisher
 import com.repovoyage.sign.pipeline.TranslationPipeline
+import com.repovoyage.sign.recognition.CameraClipFeed
+import com.repovoyage.sign.recognition.ClipRecognitionSource
+import com.repovoyage.sign.recognition.HttpClipTransport
+import com.repovoyage.sign.recognition.LocalVideoComposeClient
+import com.repovoyage.sign.recognition.LocalVideoCvClient
+import com.repovoyage.sign.recognition.RecognitionSource
 import com.repovoyage.sign.recognition.RecognitionSourceImpl
+import com.repovoyage.sign.recognition.RoutingRecognitionSource
+import com.repovoyage.sign.service.CameraBridgeForegroundService
 import com.repovoyage.sign.settings.AppSettings
 import com.repovoyage.sign.tts.AndroidTtsSpeaker
 import com.repovoyage.sign.tts.TtsManager
@@ -26,6 +35,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import java.io.File
 
 class SignApp : Application() {
 
@@ -58,9 +69,34 @@ class SignApp : Application() {
             scope = appScope,
         )
     }
+    /**
+     * 模型 B 切片识别源（P6 联调，2026-09-23）：固定窗口 MP4 段 → 词级 CV →
+     * Agent 组句 → RecognitionUpdate。上传经 §2.4.7 蜂窝绑定客户端（相机
+     * 在线时进程默认网络无公网），未就绪回落默认网络。
+     */
+    val clipSource: ClipRecognitionSource by lazy {
+        val cellularClient: () -> OkHttpClient = { cloudNetwork.clientOrNull() ?: DEFAULT_LLM_CLIENT }
+        ClipRecognitionSource(
+            outputDir = File(cacheDir, "recognition_clips"),
+            settings = settings,
+            transport = HttpClipTransport(
+                cvClient = LocalVideoCvClient(clientProvider = cellularClient),
+                composeClient = LocalVideoComposeClient(clientProvider = cellularClient),
+            ),
+            feed = CameraClipFeed { CameraBridgeForegroundService.session as? SdkCameraSession },
+            scope = appScope,
+            acquireCellular = { cloudNetwork.acquire() },
+        )
+    }
+
+    /** 识别源路由：模型 B → 切片识别；其余 → flavor 默认源（training 桩/production 不可用） */
+    val recognitionRouting: RecognitionSource by lazy {
+        RoutingRecognitionSource(settings, clipSource, RecognitionSourceImpl, appScope)
+    }
+
     val pipeline: TranslationPipeline by lazy {
         TranslationPipeline(
-            source = RecognitionSourceImpl,   // flavor 缝：training=桩源，production=不可用
+            source = recognitionRouting,
             settings = settings,
             processor = languageProcessor,
             tts = ttsManager,

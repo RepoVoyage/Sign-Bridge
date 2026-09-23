@@ -197,6 +197,43 @@
 
 ---
 
+## 语桥 App 设计落地（frontend-design 二遍法，2026-09-23）
+
+> 本节记录重构后的**实际实现决策**（`src/app/src/main/java/com/repovoyage/sign/ui/`），
+> 与上表 token 一并作为后续界面改动的基准。
+
+### 结构装置：时间轨（Timeline Rail）
+
+- 字幕流每行左侧 3dp 竖向状态色条（`TimelineRow`）：草稿=secondary 青、
+  待核对=tertiary 蓝灰、已确认=outlineVariant 浅灰。**状态用颜色+位置双通道编码**，
+  不单靠颜色（无障碍）。
+- chrome 全部退为平面层：发丝线 `HorizontalDivider` 分区（会话控制台/翻译控制/
+  字幕流/训练入口），**无卡片套件、无阴影、无渐变背景**。
+- 唯一圆角留给可交互 pill（Button/FilterChip）；圆角不用于纯展示容器。
+
+### 排版：字幕是 hero
+
+- `YuqiaoType.subtitle` = 22sp/30sp/字距 0.3sp/Medium（远距离可读，全屏最大字号）；
+  `subtitleDraft` = 18sp/26sp；chrome 标签 ≥12sp（labelSmall 下限红线）。
+- CJK 不 bundling 显示字体（包体控制）；个性由**尺度/字重对比**承载
+  （字幕 SemiBold vs 状态行 labelSmall）。
+- 每屏只有一个 boldly-styled 元素：主界面=字幕行；设置/历史=分区标题（primary 色）。
+
+### 文案
+
+- 空态给方向而非道歉：「点上方「开始翻译」，识别到的句子会按新到旧落在这里」。
+- 状态行合并信息源：`识别源｜当前模型`，一行 labelSmall，不占独立卡片。
+- 重打提示=临时行（8dp tertiary 圆点+文字，6s 自动消失），不是待核实标志、不震动。
+
+### 反模板自查结论（第二遍）
+
+- 已避免：SaaS 卡片套件、cream+serif、全大写 eyebrow、居中 hero 三件套、
+  渐变按钮、emoji 图标（底栏用 vector icon）。
+- 保留的克制项：无动画（字幕流即时更新；后续如需入场动效 ≤300ms 且尊重
+  reduced-motion）。
+
+---
+
 ## Pre-Delivery Checklist
 
 Before delivering any UI code, verify:

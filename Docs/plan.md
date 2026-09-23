@@ -272,6 +272,28 @@ FINAL 全链路测试对异步副作用的竞态断言）、双 flavor + release
 training debug 已装机。**范围修订（2026-09-23 用户决定）：机位文字指引、
 本地 LLM 引擎（决策项 #3）砍掉不做**。
 
+**进度（2026-09-23 深夜八，frontend-design 重构 + P6 联调目标重定义：模型 B
+固定窗口切片识别）**：① UI 按 frontend-design skill 二遍法重构——字幕流为
+hero（22sp/30sp 时间轨行，3dp 状态色条编码序列+待核对），chrome 退平面发丝线
+层（去卡片套件），空态/状态行文案重写，MASTER.md 增「设计落地」章节；真机
+装机截图自审通过。② 评估 codex/app-local-video-test 分支（手动 MP4 台架：
+词级 CV `/v1/recognize` + 组句 Agent `/v1/compose-signs` 已部署可达，但缺帧流
+入口/服务端分段/数值句置信度/开放语料）——**不能直接当 P6，作第一轮联调**。
+③ 用户重定义下一步目标：**相机帧流 → 固定时长窗口切分（切分定义权在用户，
+设置页可调 0.5–10s，默认 2s）→ 逐段云端识别 → 直接进字幕管线**。落地：
+SdkCameraSession 编码帧分流（encodedFrameTap，解码前）+ requestKeyFrame；
+ClipSegmenter（MediaMuxer 直接封装原始 H.264 不转码、IDR 对齐、Annex-B→AVCC、
+坏段/换代残段丢弃）；ClipRecognitionSource（词候选累积为草稿、CV 拒绝词→
+重打提示不打扰、「完成本句」→Agent 组句、needsConfirmation 布尔直接映射
+UNCERTAIN 边界=待核对+震动，无数值置信度不伪造、pts 账本取词段范围）；
+RoutingRecognitionSource（模型 B→切片源，其余→flavor 桩/不可用）；上传走
+§2.4.7 蜂窝绑定客户端（相机在线+蜂窝并发首次实链路验证）；设置页新增
+CV/Agent 令牌 + 切片窗口；分支客户端/协议文档 cherry-pick 改造入库。
+验收：JVM 228 条全绿（+17：协议解析 5、切片纯函数 5、识别源流程 7）、
+双 flavor + release 构建通过。待做：真机端到端（需两令牌+相机在场）、
+切片大小/上传延迟实测（GO 3S 高码率，必要时 setVideoBitrate 压档）、
+五句语料放开与 sentence_confidence 数值化（队友侧）。
+
 **进度（2026-09-23 深夜七，置信度流程定稿）**：用户定稿置信度流程——CV 每动作
 多候选+CV 置信度 → 服务侧组合 LLM 挑词成句并给句子置信度 → App 只看句子
 置信度：<0.7【初始阈值】→ 待核实标志+震动（识别侧唯一触发）；guard 保真失败

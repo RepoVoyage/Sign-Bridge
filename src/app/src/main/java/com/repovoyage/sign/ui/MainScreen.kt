@@ -1,32 +1,41 @@
 package com.repovoyage.sign.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -40,10 +49,12 @@ import com.repovoyage.sign.language.OutputStatus
 import com.repovoyage.sign.pipeline.PipelinePhase
 import com.repovoyage.sign.pipeline.SubtitleLine
 import com.repovoyage.sign.sentence.LangCode
+import kotlinx.coroutines.delay
 
 /**
- * 主界面内容（§2.7）：会话状态卡 → 翻译控制 → 字幕流（主体）→ 训练采集入口。
- * Scaffold/导航由 MainActivity 统一提供。
+ * 主界面（§2.7，frontend-design 二遍法重构）：字幕流是 hero——最大字号、
+ * 时间轨状态色条编码序列与状态；chrome 退为发丝线平面层；唯一圆角留给
+ * 交互 pill。会话控制台 → 翻译控制 → 字幕流 → 训练采集入口。
  */
 @Composable
 fun MainScreen(
@@ -60,151 +71,161 @@ fun MainScreen(
     val selectedModelName by vm.selectedModelName.collectAsStateWithLifecycle()
     val voiceUnready by vm.voiceUnreadySpoken.collectAsStateWithLifecycle()
     val repeatCount by vm.repeatPromptCount.collectAsStateWithLifecycle()
+    val recognitionAvailable by vm.recognitionAvailable.collectAsStateWithLifecycle()
+    val sourceDescription by vm.sourceDescription.collectAsStateWithLifecycle()
+    val clipMode by vm.clipMode.collectAsStateWithLifecycle()
+    val clipStatus by vm.clipStatus.collectAsStateWithLifecycle()
 
     // 重打提示：自最后一次触发展示 6s（needs_repeat，非待核实标志）
-    var showRepeat by androidx.compose.runtime.mutableStateOf(false)
-    androidx.compose.runtime.LaunchedEffect(repeatCount) {
+    var showRepeat by remember { mutableStateOf(false) }
+    LaunchedEffect(repeatCount) {
         if (repeatCount > 0) {
             showRepeat = true
-            kotlinx.coroutines.delay(6_000)
+            delay(6_000)
             showRepeat = false
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        // ------------------------------------------------ 会话状态卡
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            ),
+    Column(modifier = Modifier.fillMaxSize()) {
+        // ------------------------------------------------ 会话控制台（平面+发丝线）
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        sessionStateText(sessionState),
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f),
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (sessionState is SessionState.Streaming) {
+                    Box(
+                        Modifier.size(8.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.secondary),
                     )
-                    if (sessionState is SessionState.Streaming) {
-                        Text(
-                            stringResource(R.string.state_live_badge),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.secondary,
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(
+                    sessionStateText(sessionState),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                sessionEvent?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 10.dp).weight(1f),
+                    )
+                }
+            }
+            if (statsText.isNotEmpty()) {
+                Text(
+                    statsText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { if (hasPermissions) vm.startScan() else onRequestPermissions() },
+                ) { Text(stringResource(R.string.scan_button)) }
+                if (sessionState !is SessionState.Idle) {
+                    FilledTonalButton(onClick = vm::stopSession) {
+                        Text(stringResource(R.string.stop_button))
+                    }
+                }
+            }
+            if (scanStatus.isNotEmpty()) {
+                Text(
+                    scanStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (devices.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    devices.forEachIndexed { index, device ->
+                        FilterChip(
+                            selected = false,
+                            onClick = { vm.connect(device) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text(
+                                    vm.deviceLabel(device, index),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
                         )
                     }
                 }
-                sessionEvent?.let {
-                    Text(it, style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                if (statsText.isNotEmpty()) {
-                    Text(statsText, style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { if (hasPermissions) vm.startScan() else onRequestPermissions() },
-                    ) { Text(stringResource(R.string.scan_button)) }
-                    if (sessionState !is SessionState.Idle) {
-                        FilledTonalButton(onClick = vm::stopSession) {
-                            Text(stringResource(R.string.stop_button))
-                        }
-                    }
-                }
-                if (scanStatus.isNotEmpty()) {
-                    Text(scanStatus, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                if (devices.isNotEmpty()) {
-                    // 竖排全宽：长设备名不挤压换行（横排 Row 会把芯片挤成竖条）
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        devices.forEachIndexed { index, device ->
-                            FilterChip(
-                                selected = false,
-                                onClick = { vm.connect(device) },
-                                modifier = Modifier.fillMaxWidth(),
-                                label = {
-                                    Text(
-                                        vm.deviceLabel(device, index),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                },
-                            )
-                        }
-                    }
-                }
             }
         }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-        // ------------------------------------------------ 翻译控制
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (pipeline.phase == PipelinePhase.RUNNING) {
-                FilledTonalButton(onClick = vm::stopTranslation) {
-                    Text(stringResource(R.string.translation_stop))
-                }
-            } else {
-                Button(
-                    onClick = vm::startTranslation,
-                    enabled = vm.recognitionAvailable,
-                ) { Text(stringResource(R.string.translation_start)) }
-            }
-            if (pipeline.phase == PipelinePhase.SOURCE_UNAVAILABLE) {
-                Text(
-                    stringResource(R.string.translation_source_unavailable),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-        }
-
-        // 识别源 + 模型状态行
-        Text(
-            "${vm.sourceDescription}｜当前模型：$selectedModelName",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        // 重打提示横幅（needs_repeat）
-        if (showRepeat) {
-            Card(
+        // ------------------------------------------------ 翻译控制 + 状态行
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                ),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (pipeline.phase == PipelinePhase.RUNNING) {
+                    FilledTonalButton(onClick = vm::stopTranslation) {
+                        Text(stringResource(R.string.translation_stop))
+                    }
+                    // 切片识别（模型 B）：词边界=固定窗口，句边界=用户显式动作
+                    if (clipMode) {
+                        FilledTonalButton(onClick = vm::finishSentence) {
+                            Text(stringResource(R.string.finish_sentence))
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = vm::startTranslation,
+                        enabled = recognitionAvailable,
+                    ) { Text(stringResource(R.string.translation_start)) }
+                }
+                if (pipeline.phase == PipelinePhase.SOURCE_UNAVAILABLE) {
+                    Text(
+                        stringResource(R.string.translation_source_unavailable),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "$sourceDescription｜当前模型：$selectedModelName",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            clipStatus?.let {
                 Text(
-                    stringResource(R.string.repeat_prompt),
-                    modifier = Modifier.padding(12.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary,
                 )
             }
-        }
-
-        // 训练版采集入口（production 无入口，P8 验收）
-        if (vm.captureEntry.isAvailable) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { vm.captureEntry.start(vm.getApplication()) }) {
-                    Text(stringResource(R.string.capture_start_button))
-                }
-                FilledTonalButton(onClick = { vm.captureEntry.stop(vm.getApplication()) }) {
-                    Text(stringResource(R.string.capture_stop_button))
+            if (showRepeat) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(8.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.tertiary),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        stringResource(R.string.repeat_prompt),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
                 }
             }
         }
 
-        // ------------------------------------------------ 字幕流（主体）
+        // ------------------------------------------------ 字幕流（hero）
         SubtitleArea(
             draft = pipeline.draft,
             lines = pipeline.lines,
@@ -219,6 +240,22 @@ fun MainScreen(
             onCorrect = vm::submitCorrection,
             modifier = Modifier.weight(1f).fillMaxWidth(),
         )
+
+        // ------------------------------------------------ 训练采集入口
+        if (vm.captureEntry.isAvailable) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                Modifier.fillMaxWidth().padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilledTonalButton(onClick = { vm.captureEntry.start(vm.getApplication()) }) {
+                    Text(stringResource(R.string.capture_start_button))
+                }
+                FilledTonalButton(onClick = { vm.captureEntry.stop(vm.getApplication()) }) {
+                    Text(stringResource(R.string.capture_stop_button))
+                }
+            }
+        }
     }
 }
 
@@ -235,66 +272,43 @@ private fun SubtitleArea(
     modifier: Modifier = Modifier,
 ) {
     // 越晚的字幕越在上面（2026-09-23 用户决定）：管线状态保持旧→新，展示层倒序
-    LazyColumn(
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
+    LazyColumn(modifier = modifier) {
         if (draft == null && lines.isEmpty() && pendingConfirm.isEmpty()) {
             item(key = "empty") {
                 Text(
                     emptyHint,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 24.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 28.dp),
                 )
             }
         }
         if (draft != null) {
             item(key = "draft") {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    ),
-                ) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            stringResource(R.string.draft_prefix),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                        Text(draft.text, style = YuqiaoType.subtitleDraft,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer)
-                    }
+                TimelineRow(barColor = MaterialTheme.colorScheme.secondary) {
+                    Text(
+                        stringResource(R.string.draft_prefix),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    Text(draft.text, style = YuqiaoType.subtitleDraft)
                 }
             }
         }
         items(pendingConfirm, key = { "pending-${it.segmentId}" }) { pending ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                ),
-            ) {
-                Row(
-                    Modifier.padding(16.dp).fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+            TimelineRow(barColor = MaterialTheme.colorScheme.tertiary) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
                             stringResource(R.string.pending_confirm_title),
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            color = MaterialTheme.colorScheme.tertiary,
                         )
-                        Text(pending.draftText, style = YuqiaoType.subtitleDraft,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        Text(pending.draftText, style = YuqiaoType.subtitleDraft)
                         Text(
                             stringResource(R.string.pending_confirm_reason, pending.reason.name),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     TextButton(onClick = { onDiscard(pending.segmentId) }) {
@@ -304,95 +318,114 @@ private fun SubtitleArea(
             }
         }
         items(lines.asReversed(), key = { it.segmentId }) { line ->
-            SubtitleLineCard(line, voiceUnready, onReplay, onCorrect)
+            SubtitleLineRow(line, voiceUnready, onReplay, onCorrect)
+        }
+    }
+}
+
+/** 时间轨行：3dp 状态色条（结构信息：序列+状态）+ 内容列 */
+@Composable
+private fun TimelineRow(
+    barColor: androidx.compose.ui.graphics.Color,
+    content: @Composable () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(horizontal = 16.dp),
+    ) {
+        Box(
+            Modifier.width(3.dp).fillMaxHeight()
+                .background(barColor, RoundedCornerShape(2.dp)),
+        )
+        Spacer(Modifier.width(13.dp))
+        Column(
+            Modifier.weight(1f).padding(vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            content()
         }
     }
 }
 
 @Composable
-private fun SubtitleLineCard(
+private fun SubtitleLineRow(
     line: SubtitleLine,
     voiceUnready: Set<LangCode>,
     onReplay: (String, LangCode) -> Unit,
     onCorrect: (String, LangCode, String) -> Unit,
 ) {
-    // 当前打开核对对话框的语言与编辑中的文本
     var correcting by remember(line.segmentId) { mutableStateOf<Pair<LangCode, String>?>(null) }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
+    val needsReview = line.results.values.any {
+        it.status == OutputStatus.NEEDS_CONFIRMATION && !it.userConfirmed
+    }
+    TimelineRow(
+        barColor = if (needsReview) MaterialTheme.colorScheme.tertiary
+        else MaterialTheme.colorScheme.outlineVariant,
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(line.rawChinese, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            if (line.results.isEmpty()) {
-                Text(
-                    stringResource(R.string.draft_prefix),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontStyle = FontStyle.Italic,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            line.results.forEach { (language, result) ->
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(line.rawChinese, style = YuqiaoType.subtitle, fontWeight = FontWeight.SemiBold)
+        if (line.results.isEmpty()) {
+            Text(
+                stringResource(R.string.draft_prefix),
+                style = MaterialTheme.typography.bodySmall,
+                fontStyle = FontStyle.Italic,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        line.results.forEach { (language, result) ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        languageDisplayName(language),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    // §2.5.1：语音未就绪的语言仅显示字幕并明确标记
+                    if (language in voiceUnready) {
                         Text(
-                            languageDisplayName(language),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.secondary,
+                            stringResource(R.string.voice_unavailable_marker),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 6.dp),
                         )
-                        // §2.5.1：语音未就绪的语言仅显示字幕并明确标记
-                        if (language in voiceUnready) {
-                            Text(
-                                stringResource(R.string.voice_unavailable_marker),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 6.dp),
-                            )
-                        }
                     }
-                    when {
-                        result.status == OutputStatus.UNAVAILABLE ->
+                }
+                when {
+                    result.status == OutputStatus.UNAVAILABLE ->
+                        Text(
+                            stringResource(R.string.result_unavailable),
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontStyle = FontStyle.Italic,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    result.status == OutputStatus.NEEDS_CONFIRMATION && !result.userConfirmed ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                stringResource(R.string.result_unavailable),
-                                style = YuqiaoType.subtitle,
-                                fontStyle = FontStyle.Italic,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                "${result.text ?: ""}（${stringResource(R.string.result_needs_confirmation)}）",
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f, fill = false),
                             )
-                        result.status == OutputStatus.NEEDS_CONFIRMATION && !result.userConfirmed ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = {
+                                correcting = language to (result.text ?: "")
+                            }) { Text(stringResource(R.string.action_review)) }
+                        }
+                    else ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                result.text ?: "",
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            if (language in line.unspokenLanguages) {
                                 Text(
-                                    "${result.text ?: ""}（${stringResource(R.string.result_needs_confirmation)}）",
-                                    style = YuqiaoType.subtitle,
-                                    modifier = Modifier.weight(1f, fill = false),
+                                    stringResource(R.string.unspoken_marker),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(horizontal = 4.dp),
                                 )
-                                TextButton(onClick = {
-                                    correcting = language to (result.text ?: "")
-                                }) { Text(stringResource(R.string.action_review)) }
-                            }
-                        else ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    result.text ?: "",
-                                    style = YuqiaoType.subtitle,
-                                    modifier = Modifier.weight(1f, fill = false),
-                                )
-                                if (language in line.unspokenLanguages) {
-                                    Text(
-                                        stringResource(R.string.unspoken_marker),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.padding(horizontal = 4.dp),
-                                    )
-                                    TextButton(onClick = { onReplay(line.segmentId, language) }) {
-                                        Text(stringResource(R.string.action_replay))
-                                    }
+                                TextButton(onClick = { onReplay(line.segmentId, language) }) {
+                                    Text(stringResource(R.string.action_replay))
                                 }
                             }
-                    }
+                        }
                 }
             }
         }
@@ -435,7 +468,7 @@ private fun CorrectionDialog(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(rawChinese, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                Text(rawChinese, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                 Text(
                     stringResource(R.string.correction_candidate_label),
                     style = MaterialTheme.typography.labelMedium,

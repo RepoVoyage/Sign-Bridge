@@ -1,6 +1,7 @@
 package com.repovoyage.sign.video
 
 import com.arashivision.sdk.camera.api.preview.PreviewStreamType
+import java.io.File
 
 /** API.md §2.1 — SDK 回调入口；进入本层前已完成有界复制，取得所有权 */
 data class StreamChunk(
@@ -17,6 +18,13 @@ data class EncodedFrame(
     val ptsUs: Long,                     // ms → µs
     val isSyncPoint: Boolean,            // 仅经验证的随机访问帧（H.264 IDR 等）
     val streamGeneration: Long,
+)
+
+/** ClipSegmenter 产出的一段 MP4（固定窗口、随机访问点起始）；消费方上传后删除文件 */
+data class ClipSegment(
+    val file: File,
+    val startPtsUs: Long,
+    val endPtsUs: Long,
 )
 
 /** P3 真机验证用取流统计；单写者（分片消费协程），验证收敛后移除 */

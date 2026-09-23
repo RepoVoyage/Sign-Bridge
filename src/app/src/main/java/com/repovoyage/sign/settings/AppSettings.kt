@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -111,6 +112,36 @@ class AppSettings(private val store: DataStore<Preferences>) {
         }
     }
 
+    // ---------------------------------------------------------------- 识别服务凭据与切片窗口（P6 联调，模型 B）
+
+    /**
+     * 词级 CV 与组句 Agent 服务令牌（部署方提供，仅存本机，§6.3 同 LLM 密钥
+     * 卫生标准）。两项齐备才启用切片识别源；变更不递增 settingsRevision
+     * （不影响语言输出任务，避免误清 TTS 队列）。
+     */
+    val cvServiceToken: Flow<String> = store.data.map { it[KEY_CV_SERVICE_TOKEN] ?: "" }
+    val agentServiceToken: Flow<String> = store.data.map { it[KEY_AGENT_SERVICE_TOKEN] ?: "" }
+
+    val recognitionTokens: Flow<RecognitionTokens> =
+        combine(cvServiceToken, agentServiceToken) { cv, agent -> RecognitionTokens(cv, agent) }
+
+    suspend fun setRecognitionTokens(cvToken: String, agentToken: String) {
+        store.edit {
+            it[KEY_CV_SERVICE_TOKEN] = cvToken.trim()
+            it[KEY_AGENT_SERVICE_TOKEN] = agentToken.trim()
+        }
+    }
+
+    /**
+     * 固定窗口切片时长（秒）——视频切分定义权在用户（2026-09-23 决定：
+     * 固定时长窗口）。开始翻译时读取，变更在下次开始后生效。
+     */
+    val clipWindowSeconds: Flow<Double> = store.data.map { it[KEY_CLIP_WINDOW_SECONDS] ?: 2.0 }
+
+    suspend fun setClipWindowSeconds(seconds: Double) {
+        store.edit { it[KEY_CLIP_WINDOW_SECONDS] = seconds.coerceIn(0.5, 10.0) }
+    }
+
     // ---------------------------------------------------------------- 历史对话重命名
 
     /**
@@ -168,6 +199,9 @@ class AppSettings(private val store: DataStore<Preferences>) {
         private val KEY_TTS_ENABLED = booleanPreferencesKey("tts_enabled")
         private val KEY_SETTINGS_REVISION = longPreferencesKey("settings_revision")
         private val KEY_SELECTED_MODEL_ID = stringPreferencesKey("selected_model_id")
+        private val KEY_CV_SERVICE_TOKEN = stringPreferencesKey("cv_service_token")
+        private val KEY_AGENT_SERVICE_TOKEN = stringPreferencesKey("agent_service_token")
+        private val KEY_CLIP_WINDOW_SECONDS = doublePreferencesKey("clip_window_seconds")
         private val KEY_CONVERSATION_NAMES = stringPreferencesKey("conversation_names")
         private val KEY_LLM_BASE_URL = stringPreferencesKey("llm_base_url")
         private val KEY_LLM_API_KEY = stringPreferencesKey("llm_api_key")
@@ -183,4 +217,10 @@ class AppSettings(private val store: DataStore<Preferences>) {
 data class LlmCredentials(val baseUrl: String, val apiKey: String, val model: String) {
     val isConfigured: Boolean
         get() = baseUrl.isNotBlank() && apiKey.isNotBlank() && model.isNotBlank()
+}
+
+/** 模型 B 识别服务令牌（词级 CV + 组句 Agent，两个独立令牌）；齐备才启用切片识别 */
+data class RecognitionTokens(val cvToken: String, val agentToken: String) {
+    val isConfigured: Boolean
+        get() = cvToken.isNotBlank() && agentToken.isNotBlank()
 }
