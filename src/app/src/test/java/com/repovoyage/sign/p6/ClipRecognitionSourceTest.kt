@@ -357,6 +357,29 @@ class ClipRecognitionSourceTest {
     }
 
     @Test
+    fun `完成本句点击即发——不等在途识别`() = runBlocking {
+        settings.setRecognitionTokens("cv-tok", "agent-tok")
+        val source = newSource()
+        waitUntil(10_000) { source.isAvailable }
+        source.start()
+        transport.cvQueue += ok("我")
+        feed.callback!!(clip("a.mp4", byteArrayOf(1)), 0, 2_000_000)
+        waitUntil { source.statusText.value?.contains("已填 1 槽") == true }
+        // 第二段识别挂起（在途）：点击完成本句应立即以已填槽组句，不被阻塞
+        transport.gate = CompletableDeferred()
+        transport.cvQueue += ok("回")
+        feed.callback!!(clip("b.mp4", byteArrayOf(2)), 2_000_000, 4_000_000)
+        transport.composeSentence = "我想回家"
+        source.finishSentence()
+        waitUntil { transport.lastComposeRevision == 1 }
+        assertEquals(1, transport.composeGestureCount)
+        // 在途槽随句子提交脱离：回填不再产生草稿/新句账本
+        transport.gate!!.complete(Unit)
+        delay(200)
+        assertEquals(1, transport.composeGestureCount)
+    }
+
+    @Test
     fun `全空槽不调 compose（契约 gestures 每项须 1-3 候选）`() = runBlocking {
         settings.setRecognitionTokens("cv-tok", "agent-tok")
         val source = newSource()

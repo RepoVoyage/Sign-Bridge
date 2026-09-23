@@ -11,7 +11,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,8 +18,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
 
@@ -94,13 +91,14 @@ class ClipRecognitionSource(
     private var composeRevision = 0
     private var sessionId = ""
     private var currentSegmentId: String? = null
-    private val lock = Mutex()
-
     /** 句内槽位（时间序）；feed 回调/消费者协程/finishSentence 三处访问，锁保护 */
     private class Slot(val startPtsUs: Long, val endPtsUs: Long) {
         var pending = true
         var empty = false
         var result: CvResult? = null
+
+        /** 所属句子已提交/清空：在途识别回填只落对象，不碰新句账本 */
+        var detached = false
     }
 
     private val slots = mutableListOf<Slot>()
@@ -221,69 +219,65 @@ class ClipRecognitionSource(
             return
         }
         retainForDebug(bytes)
-        lock.withLock {
-            if (!running) {
-                fillEmpty(slot)
-                return
-            }
-            _statusText.value = "正在识别第 ${slotIndex(slot) + 1} 个槽…"
-            val result = try {
-                transport.recognize(bytes, tokens.cvToken)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                fillEmpty(slot)
-                _statusText.value = error.message ?: "识别请求失败"
-                return
-            }
-            if (!running) {
-                fillEmpty(slot)
-                return
-            }
-            if (result.status == "OK" && result.candidates.isNotEmpty()) {
-                synchronized(slots) {
-                    slot.pending = false
-                    slot.result = result
-                    pendingCount--
-                }
-                _statusText.value = "已填 ${filledCount()} 槽；打完点「完成本句」"
-            } else {
-                fillEmpty(slot)
-                // 服务端拒识 = 该槽空出 + 重打提示（非待核实、不震动）
-                _needsRepeat.emit(Unit)
-                _statusText.value = "第 ${slotIndex(slot) + 1} 槽空出：${result.status}" +
-                    "（${result.frames} 帧、手部 ${(result.anyHandFraction * 100).toInt()}%），该词请重打"
-            }
-            emitDraft()
+        if (!running) {
+            fillEmpty(slot)
+            return
         }
+        _statusText.value = "正在识别第 ${slotIndex(slot) + 1} 个槽…"
+        val result = try {
+            transport.recognize(bytes, tokens.cvToken)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            fillEmpty(slot)
+            _statusText.value = error.message ?: "识别请求失败"
+            return
+        }
+        if (!running) {
+            fillEmpty(slot)
+            return
+        }
+        if (result.status == "OK" && result.candidates.isNotEmpty()) {
+            synchronized(slots) {
+                slot.pending = false
+                slot.result = result
+                if (!slot.detached && pendingCount > 0) pendingCount--
+            }
+            _statusText.value = "已填 ${filledCount()} 槽；打完点「完成本句」"
+        } else {
+            fillEmpty(slot)
+            // 服务端拒识 = 该槽空出 + 重打提示（非待核实、不震动）
+            _needsRepeat.emit(Unit)
+            _statusText.value = "第 ${slotIndex(slot) + 1} 槽空出：${result.status}" +
+                "（${result.frames} 帧、手部 ${(result.anyHandFraction * 100).toInt()}%），该词请重打"
+        }
+        emitDraft()
     }
 
     private fun fillEmpty(slot: Slot) {
         synchronized(slots) {
             if (slot.pending) {
                 slot.pending = false
-                if (pendingCount > 0) pendingCount--
+                if (!slot.detached && pendingCount > 0) pendingCount--
             }
             slot.empty = true
         }
         emitDraft()
     }
 
-    /** 用户「完成本句」：等齐在途识别（上限 [FINISH_WAIT_MS]），槽序原样送 Agent */
+    /**
+     * 用户「完成本句」：**点击即把当前已填槽快照送 Agent**（用户定稿：不等在途
+     * 识别、不被识别中的请求阻塞）；在途槽位随句子提交脱离，回填不落新句。
+     */
     fun finishSentence() {
         if (!running) return
         scope.launch {
-            val deadline = System.currentTimeMillis() + FINISH_WAIT_MS
-            while (synchronized(slots) { pendingCount } > 0 && System.currentTimeMillis() < deadline) {
-                delay(100)
+            val snapshot = synchronized(slots) { slots.toList() }
+            if (snapshot.isEmpty()) {
+                _statusText.value = "本句还没有槽位"
+                return@launch
             }
-            lock.withLock {
-                val snapshot = synchronized(slots) { slots.toList() }
-                if (snapshot.isEmpty()) {
-                    _statusText.value = "本句还没有槽位"
-                    return@launch
-                }
-                // 契约：gestures 每项 candidates 须 1–3 条——空槽（拒识/失败/
+            // 契约：gestures 每项 candidates 须 1–3 条——空槽（拒识/失败/
                 // 丢弃）不上线，仅 App 侧时间轴保留位置；发 FILLED 槽的时间序
                 val filled = snapshot.filter { it.result != null }
                 if (filled.isEmpty()) {
@@ -296,57 +290,57 @@ class ClipRecognitionSource(
                 } else {
                     filled
                 }
-                val segId = currentSegmentId ?: return@launch
-                val revision = ++composeRevision
-                _statusText.value = "正在补全句子…"
-                val gestures = capped.map { it.result!! }
-                val result = try {
-                    transport.compose(sessionId, segId, revision, gestures, tokens.agentToken)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    _statusText.value = error.message ?: "补全请求失败"
-                    return@launch
-                }
-                if (!running) return@launch
-                if (result.segmentId != segId || result.revision != revision) {
-                    _statusText.value = "Agent 返回的段 ID 或修订号不匹配"
-                    return@launch
-                }
-                val sentence = result.sentence
-                if (sentence == null) {
-                    // 槽位保留：可继续补槽或重试组句
-                    _statusText.value = "未能确定句子：${result.status}；可继续补槽或重试"
-                    return@launch
-                }
-                _updates.emit(
-                    RecognitionUpdate(
-                        sequenceEpoch = epoch,
-                        segmentId = segId,
-                        draftText = sentence,
-                        tokenSpans = listOf(
-                            TokenSpan(sentence, capped.first().startPtsUs, capped.last().endPtsUs, stable = true),
-                        ),
-                        confidence = null,   // Agent 无数值置信度，不伪造
-                        boundary = BoundarySignal(
-                            cutoffPtsUs = capped.last().endPtsUs,
-                            requiredFutureContextUs = 0,
-                            reliability = if (result.needsConfirmation) {
-                                BoundaryReliability.UNCERTAIN
-                            } else {
-                                BoundaryReliability.RELIABLE
-                            },
-                            source = BoundarySource.MODEL,
-                        ),
-                    ),
-                )
-                synchronized(slots) {
-                    slots.clear()
-                    pendingCount = 0
-                }
-                currentSegmentId = null
-                _statusText.value = if (result.needsConfirmation) "组句待核对" else null
+            val segId = currentSegmentId ?: return@launch
+            val revision = ++composeRevision
+            _statusText.value = "正在补全句子…"
+            val gestures = capped.map { it.result!! }
+            val result = try {
+                transport.compose(sessionId, segId, revision, gestures, tokens.agentToken)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _statusText.value = error.message ?: "补全请求失败"
+                return@launch
             }
+            if (!running) return@launch
+            if (result.segmentId != segId || result.revision != revision) {
+                _statusText.value = "Agent 返回的段 ID 或修订号不匹配"
+                return@launch
+            }
+            val sentence = result.sentence
+            if (sentence == null) {
+                // 槽位保留：可继续补槽或重试组句
+                _statusText.value = "未能确定句子：${result.status}；可继续补槽或重试"
+                return@launch
+            }
+            _updates.emit(
+                RecognitionUpdate(
+                    sequenceEpoch = epoch,
+                    segmentId = segId,
+                    draftText = sentence,
+                    tokenSpans = listOf(
+                        TokenSpan(sentence, capped.first().startPtsUs, capped.last().endPtsUs, stable = true),
+                    ),
+                    confidence = null,   // Agent 无数值置信度，不伪造
+                    boundary = BoundarySignal(
+                        cutoffPtsUs = capped.last().endPtsUs,
+                        requiredFutureContextUs = 0,
+                        reliability = if (result.needsConfirmation) {
+                            BoundaryReliability.UNCERTAIN
+                        } else {
+                            BoundaryReliability.RELIABLE
+                        },
+                        source = BoundarySource.MODEL,
+                    ),
+                ),
+            )
+            synchronized(slots) {
+                slots.forEach { it.detached = true }   // 在途回填不落新句
+                slots.clear()
+                pendingCount = 0
+            }
+            currentSegmentId = null
+            _statusText.value = if (result.needsConfirmation) "组句待核对" else null
         }
     }
 
@@ -391,9 +385,6 @@ class ClipRecognitionSource(
 
         /** 单句槽位上限（Agent 契约 gestures ≤12） */
         const val MAX_GESTURES = 12
-
-        /** 完成本句时等在途识别的上限 */
-        const val FINISH_WAIT_MS = 10_000L
 
         private const val EMPTY_MARK = "＿"
         private const val PENDING_MARK = "…"
