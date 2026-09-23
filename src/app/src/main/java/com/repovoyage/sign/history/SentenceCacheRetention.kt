@@ -1,4 +1,4 @@
-package com.repovoyage.sign.cache
+package com.repovoyage.sign.history
 
 data class CachedSentenceRecord(
     val key: String,                      // (sessionId, segmentId) 的持久化主键
