@@ -1,10 +1,10 @@
-# 语桥 (Yuqiao) — GO 3S Sign Language Translation for Android
+# Sign-Bridge — GO 3S 手语翻译 Android App（原名语桥）
 
 Insta360 竞赛作品。使用 Insta360 GO 3S 相机取流，在手机上实现手语→文本→语音的全链路翻译。
 
 <img src="src/app/src/main/res/drawable/ic_launcher_foreground.png" width="64" alt="语桥 logo" align="right">
 
-**当前状态：** P6 联调阶段——识别链路已跑通（词级 CV → Agent 组句 → 润色/翻译 → 字幕/TTS），使用云端模型 B；本地模型未接。
+**当前状态：** 识别链路端到端可演示（切片 → 云端词级 CV（模型 B）→ Agent 组句 → 字幕/TTS）；队友训练的完整 CV 模型待接入（见「当前局限与路线图」）。
 
 ---
 
@@ -167,10 +167,25 @@ adb install -r src/app/build/outputs/apk/training/debug/app-training-debug.apk
 ./src/gradlew -p src test
 ```
 
-- **233+ JVM 单元测试**（JUnit4 + kotlinx-coroutines-test）
+- **245 个 JVM 单元测试**（JUnit4 + kotlinx-coroutines-test）
 - `p6/` — 切片识别源测试（槽位制、HTTP 传输、组句契约）
 - `p7/` — 管线编排测试（段状态机、TTS、缓存、纠错）
 - 真机联调日志：`adb logcat -s ClipCv YuqiaoTts`（CV 联调 / TTS 诊断）
+
+---
+
+## 当前局限与路线图
+
+链路已打通，主要瓶颈在识别质量——属数据与建模层面，而非工程链路：
+
+| 症状 | 根因 |
+|---|---|
+| 词级准确率有限；换人/换光照泛化下降 | 训练数据规模不足 |
+| 误触发、阈值不稳定 | 识别分数未按正负样本分布校准 |
+| 候选延迟可感知 | 关键点提取 + 词级模型在链路中的推理开销 |
+| 词表 19 个孤立词、组句限于五句固定语料 | 孤立词方案在数据量约束下的上限 |
+
+**改进路线**：扩充关键点级训练数据 → 词组级/连续手语建模 → 分数阈值校准 → LLM 实时组句替代固定语料。
 
 ---
 
